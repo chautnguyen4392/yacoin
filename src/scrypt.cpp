@@ -221,7 +221,7 @@ const ::uint32_t
       //highestZeroBitsSet = 0xe0;
         // Hash target can't be smaller than bnProofOfWorkLimit which is 00000fffff000000
         nMask = 0x00,
-        highestZeroBitsSet = ~(hasht[ 29 ]),
+        highestZeroBitsSet = ~(hasht[ 31 ]),
         nMaskPattern = 0x80;
 
     while( 0x80 == ( 0x80 & highestZeroBitsSet) )
@@ -257,9 +257,7 @@ const ::uint32_t
         ++hash_count;
         // Hash target can't be smaller than bnProofOfWorkLimit which is 00000fffff000000
         if (            
-            ( 0 == ( hashc[31]))
-            && ( 0 == ( hashc[30]))
-            && ( 0 == ( nMask & hashc[29]))
+			( 0 == ( nMask & hashc[31]))
            ) 
         {
             //memcpy(result, hash, 32);
