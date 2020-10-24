@@ -18,6 +18,7 @@
 #ifndef BITCOIN_MAIN_H
  #include "main.h"
 #endif
+#include "base58.h"
 
 using namespace boost;
 
@@ -1458,6 +1459,9 @@ bool Solver(
             vector<vector<unsigned char> >& vSolutionsRet
            )
 {
+	printf("TACA ===> Solver, scriptPubKey printout\n");
+	scriptPubKey.print();
+	scriptPubKey.PrintHex();
     // Templates
     static map<txnouttype, CScript> mTemplates;
     if (mTemplates.empty())
@@ -1484,6 +1488,7 @@ bool Solver(
     // it is always OP_HASH160 20 [20 byte hash] OP_EQUAL
     if (scriptPubKey.IsPayToScriptHash())
     {
+    	printf("TACA ===> Solver, scriptPubKey.IsPayToScriptHash()\n");
         typeRet = TX_SCRIPTHASH;
         vector<unsigned char> hashBytes(scriptPubKey.begin()+2, scriptPubKey.begin()+22);
         vSolutionsRet.push_back(hashBytes);
@@ -1511,6 +1516,7 @@ bool Solver(
                 typeRet = tplate.first;
                 if (typeRet == TX_MULTISIG)
                 {
+                	printf("TACA ===> Solver, typeRet == TX_MULTISIG\n");
 #ifdef WIN32
 //#ifdef _MSC_VER
                     if( vSolutionsRet.empty() ) // trouble!
@@ -1526,42 +1532,65 @@ bool Solver(
                     if (m < 1 || n < 1 || m > n || vSolutionsRet.size()-2 != n)
                         return false;
                 }
+                printf("TACA ===> Solver, typeRet == %d\n", typeRet);
                 return true;
             }
             if (!script1.GetOp(pc1, opcode1, vch1))
+            {
+            	printf("Solver 1\n");
                 break;
+            }
             if (!script2.GetOp(pc2, opcode2, vch2))
+            {
+            	printf("Solver 2\n");
                 break;
+            }
 
             // Template matching opcodes:
             if (opcode2 == OP_PUBKEYS)
             {
+            	printf("Solver opcode2 == OP_PUBKEYS\n");
                 while (vch1.size() >= 33 && vch1.size() <= 120)
                 {
                     vSolutionsRet.push_back(vch1);
                     if (!script1.GetOp(pc1, opcode1, vch1))
+                    {
+                    	printf("Solver 3\n");
                         break;
+                    }
                 }
                 if (!script2.GetOp(pc2, opcode2, vch2))
+                {
+                	printf("Solver 4\n");
                     break;
+                }
                 // Normal situation is to fall through
                 // to other if/else statements
             }
 
             if (opcode2 == OP_PUBKEY)
             {
+            	printf("Solver opcode2 == OP_PUBKEY\n");
                 if (vch1.size() < 33 || vch1.size() > 120)
+                {
+                	printf("Solver 5\n");
                     break;
+                }
                 vSolutionsRet.push_back(vch1);
             }
             else if (opcode2 == OP_PUBKEYHASH)
             {
+            	printf("Solver opcode2 == OP_PUBKEYHASH\n");
                 if (vch1.size() != sizeof(uint160))
+                {
+                	printf("Solver 6\n");
                     break;
+                }
                 vSolutionsRet.push_back(vch1);
             }
             else if (opcode2 == OP_SMALLINTEGER)
             {   // Single-byte small integer pushed onto vSolutions
+            	printf("Solver opcode2 == OP_SMALLINTEGER\n");
                 if (opcode1 == OP_0 ||
                     (opcode1 >= OP_1 && opcode1 <= OP_16))
                 {
@@ -1569,24 +1598,33 @@ bool Solver(
                     vSolutionsRet.push_back(valtype(1, n));
                 }
                 else
+                {
+                	printf("Solver 7\n");
                     break;
+                }
             }
             else if (opcode2 == OP_SMALLDATA)   // this is different from 0.4.4
             {
+            	printf("Solver opcode2 == OP_SMALLDATA\n");
                 if (!fUseOld044Rules)
                 {   // small pushdata, <= 80 bytes
                     if (vch1.size() > 80)
+                    {
+                    	printf("Solver 8\n");
                         break;
+                    }
                 }
             }
             else if ((opcode1 != opcode2) || (vch1 != vch2))
             {   // Others must match exactly
+            	printf("Solver 9\n");
                 break;
             }
         }
     }
 
     vSolutionsRet.clear();
+    printf("TACA ===> Solver, typeRet = TX_NONSTANDARD\n");
     typeRet = TX_NONSTANDARD;
     return false;
 }
@@ -1774,6 +1812,11 @@ isminetype IsMine(const CKeyStore &keystore, const CTxDestination& dest)
 {
     CScript script;
     script.SetDestination(dest);
+	printf(
+			"TACA ===> IsMineFirst, address = %s\n",
+			CBitcoinAddress(dest).ToString().c_str());
+	script.print();
+	script.PrintHex();
     return IsMine(keystore, script);
 }
 
@@ -1818,39 +1861,68 @@ isminetype IsMine(const CKeyStore &keystore, const CScript& scriptPubKey)
     txnouttype whichType;
     if (!Solver(scriptPubKey, whichType, vSolutions)) {
         if (keystore.HaveWatchOnly(scriptPubKey))
+        {
+        	printf("TACA ===> IsMineSecond 1\n");
             return MINE_WATCH_ONLY;
+        }
+    	printf("TACA ===> IsMineSecond 2\n");
         return MINE_NO;
+    }
+
+    BOOST_FOREACH(const valtype& solution, vSolutions)
+    {
+        printf("TACA ===> IsMine, solution = ");
+        for (auto i = solution.begin(); i != solution.end(); ++i)
+        {
+        	printf("%x ", *i);
+        }
+        printf("\n");
     }
 
     CKeyID keyID;
     switch (whichType)
     {
     case TX_NONSTANDARD:
+    	printf("TACA ===> IsMineSecond 3\n");
     case TX_NULL_DATA:
+    	printf("TACA ===> IsMineSecond 4\n");
         break;
     case TX_PUBKEY:
+    	printf("TACA ===> IsMineSecond, TX_PUBKEY\n");
         keyID = CPubKey(vSolutions[0]).GetID();
         if (keystore.HaveKey(keyID))
+        {
+        	printf("TACA ===> IsMineSecond 5\n");
             return MINE_SPENDABLE;
+        }
         break;
     case TX_PUBKEYHASH:
+    	printf("TACA ===> IsMineSecond, TX_PUBKEYHASH\n");
         keyID = CKeyID(uint160(vSolutions[0]));
         if (keystore.HaveKey(keyID))
+        {
+        	printf("TACA ===> IsMineSecond 6\n");
             return MINE_SPENDABLE;
+        }
         break;
     case TX_SCRIPTHASH:
     {
+    	printf("TACA ===> IsMineSecond, TX_SCRIPTHASH\n");
         CScriptID scriptID = CScriptID(uint160(vSolutions[0]));
         CScript subscript;
         if (keystore.GetCScript(scriptID, subscript)) {
             isminetype ret = IsMine(keystore, subscript);
             if (ret == MINE_SPENDABLE)
+            {
+            	printf("TACA ===> IsMineSecond 7\n");
                 return ret;
+            }
         }
         break;
     }
     case TX_MULTISIG:
     {
+    	printf("TACA ===> IsMineSecond, TX_MULTISIG\n");
         // Only consider transactions "mine" if we own ALL the
         // keys involved. multi-signature transactions that are
         // partially owned (somebody else has a key that can spend
@@ -1858,14 +1930,19 @@ isminetype IsMine(const CKeyStore &keystore, const CScript& scriptPubKey)
         // in shared-wallet situations.
         vector<valtype> keys(vSolutions.begin()+1, vSolutions.begin()+vSolutions.size()-1);
         if (HaveKeys(keys, keystore) == keys.size())
+        {
+        	printf("TACA ===> IsMineSecond 8\n");
             return MINE_SPENDABLE;
+        }
         break;
     }
     case TX_CLTV:
     {
-       keyID = CPubKey(vSolutions[0]).GetID();
+    	printf("TACA ===> IsMineSecond, TX_CLTV\n");
+    	keyID = CPubKey(vSolutions[0]).GetID();
         if (keystore.HaveKey(keyID))
         {
+        	printf("TACA ===> IsMineSecond 9\n");
             return MINE_SPENDABLE;
         }
         break;
@@ -1873,7 +1950,11 @@ isminetype IsMine(const CKeyStore &keystore, const CScript& scriptPubKey)
     }
 
     if (keystore.HaveWatchOnly(scriptPubKey))
+    {
+    	printf("TACA ===> IsMineSecond 10\n");
         return MINE_WATCH_ONLY;
+    }
+	printf("TACA ===> IsMineSecond 11\n");
     return MINE_NO;
 }
 

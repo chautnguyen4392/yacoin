@@ -52,6 +52,9 @@ bool CBasicKeyStore::AddCScript(const CScript& redeemScript)
             return error("CBasicKeyStore::AddCScript() : redeemScript is nul vector?");
 #else
         mapScripts[redeemScript.GetID()] = redeemScript;
+        printf("TACA ===> CBasicKeyStore::AddCScript, add redeemScript to map\n");
+        redeemScript.print();
+        redeemScript.PrintHex();
 #endif
     }
     return true;
@@ -76,6 +79,9 @@ bool CBasicKeyStore::GetCScript(const CScriptID &hash, CScript& redeemScriptOut)
         if (mi != mapScripts.end())
         {
             redeemScriptOut = (*mi).second;
+            printf("TACA ===> CBasicKeyStore::GetCScript, redeemScriptOut printout\n");
+            redeemScriptOut.print();
+            redeemScriptOut.PrintHex();
             return true;
         }
     }

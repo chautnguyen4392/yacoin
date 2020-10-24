@@ -3003,6 +3003,13 @@ bool CWallet::SetAddressBookName(const CTxDestination& address, const string& st
     NotifyAddressBookChanged(this, address, strName, ::IsMine(*this, address), (mi == mapAddressBook.end()) ? CT_NEW : CT_UPDATED);
     if (!fFileBacked)
         return false;
+    for(auto& element: mapAddressBook)
+    {
+		printf(
+				"TACA ===> CWallet::SetAddressBookName, address = %s, strName = %s\n",
+				CBitcoinAddress(element.first).ToString().c_str(),
+				element.second.c_str());
+    }
     return CWalletDB(strWalletFile).WriteName(CBitcoinAddress(address).ToString(), strName);
 }
 

@@ -474,7 +474,10 @@ Value getreceivedbyaddress(const Array& params, bool fHelp)
         throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid Yacoin address");
     scriptPubKey.SetDestination(address.Get());
     if (!IsMine(*pwalletMain,scriptPubKey))
+    {
+    	printf("TACA ===> getreceivedbyaddress, !IsMine(*pwalletMain,scriptPubKey)\n");
         return (double)0.0;
+    }
 
     // Minimum confirmations
     int nMinDepth = 1;
@@ -833,6 +836,7 @@ Value addmultisigaddress(const Array& params, bool fHelp)
     string strAccount;
     if (params.size() > 2)
         strAccount = AccountFromValue(params[2]);
+    printf("TACA ===> addmultisigaddress, strAccount = %s\n", strAccount.c_str());
 
     // Gather public keys
     if (nRequired < 1)
@@ -887,9 +891,10 @@ Value addmultisigaddress(const Array& params, bool fHelp)
         strprintf("redeemScript exceeds size limit: %" PRIszu " > %d", inner.size(), MAX_SCRIPT_ELEMENT_SIZE));
 
     CScriptID innerID = inner.GetID();
-    pwalletMain->AddCScript(inner);
+    bool result1 = pwalletMain->AddCScript(inner);
 
-    pwalletMain->SetAddressBookName(innerID, strAccount);
+    bool result2 = pwalletMain->SetAddressBookName(innerID, strAccount);
+    printf("TACA ===> addmultisigaddress, result1 = %d, result2 = %d", result1, result2);
     return CBitcoinAddress(innerID).ToString();
 }
 
@@ -979,6 +984,7 @@ Value createcltvaddress(const Array& params, bool fHelp)
     string strAccount;
     if (params.size() > 1)
         strAccount = AccountFromValue(params[1]);
+    printf("TACA ===> addcltvaddress, strAccount = %s\n", strAccount.c_str());
 
     // Construct using pay-to-script-hash:
     CScript inner;
@@ -989,7 +995,7 @@ Value createcltvaddress(const Array& params, bool fHelp)
         strprintf("redeemScript exceeds size limit: %" PRIszu " > %d", inner.size(), MAX_SCRIPT_ELEMENT_SIZE));
 
     CScriptID innerID = inner.GetID();
-    pwalletMain->AddCScript(inner);
+    bool result1 = pwalletMain->AddCScript(inner);
 
     CBitcoinAddress address(innerID);
 
@@ -997,7 +1003,8 @@ Value createcltvaddress(const Array& params, bool fHelp)
     result.push_back(Pair("cltv address", address.ToString()));
     result.push_back(Pair("redeemScript", HexStr(inner.begin(), inner.end())));
 
-    pwalletMain->SetAddressBookName(innerID, strAccount);
+    bool result2 = pwalletMain->SetAddressBookName(innerID, strAccount);
+    printf("TACA ===> addcltvaddress, result1 = %d, result2 = %d\n", result1, result2);
     return result;
 }
 
@@ -1367,7 +1374,20 @@ Value listaccounts(const Array& params, bool fHelp)
     BOOST_FOREACH(const PAIRTYPE(CTxDestination, string)& entry, pwalletMain->mapAddressBook) 
     {
         if (IsMine(*pwalletMain, entry.first)) // This address belongs to me
+        {
+    		printf(
+    				"TACA ===> listaccounts, Belong to me, address = %s, account = %s\n",
+    				CBitcoinAddress(entry.first).ToString().c_str(),
+					entry.second.c_str());
             mapAccountBalances[entry.second] = 0;
+        }
+        else
+        {
+    		printf(
+    				"TACA ===> listaccounts, NOT Belong to me, address = %s, account = %s\n",
+    				CBitcoinAddress(entry.first).ToString().c_str(),
+					entry.second.c_str());
+        }
     }
 
     for (

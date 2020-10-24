@@ -573,6 +573,7 @@ public:
         if (end() - pc < 1)
             return false;
         ::uint32_t opcode = *pc++;
+        printf("TACA ===> GetOp2, opcode = %x\n", opcode);
 
         // Immediate operand
         if (opcode <= OP_PUSHDATA4)
