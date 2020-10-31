@@ -99,7 +99,7 @@ private:
 	bool SelectCoins(::int64_t nTargetValue, int64_t nSpendTime,
 			std::set<std::pair<const CWalletTx*, unsigned int> > &setCoinsRet,
 			::int64_t &nValueRet, const CCoinControl *coinControl = NULL,
-			const CScript *fromScriptPubKey = NULL) const;
+			const CScript *fromScriptPubKey = NULL);
 
     CWalletDB *pwalletdbEncryption, *pwalletdbDecryption;
 

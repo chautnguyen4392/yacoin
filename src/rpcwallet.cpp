@@ -916,6 +916,8 @@ Value spendcltv(const Array& params, bool fHelp)
     if (!IsMine(*pwalletMain,scriptPubKey))
     	throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Wallet doesn't manage coins in this address");
 
+    printf("CHAUTN ==> spendcltv, scriptPubKey = %s\n", HexStr(scriptPubKey.begin(), scriptPubKey.end()).c_str());
+
     // Check if destination address is valid
     CBitcoinAddress destAddress(params[1].get_str());
     if (!destAddress.IsValid())
@@ -935,6 +937,7 @@ Value spendcltv(const Array& params, bool fHelp)
             	nTotalValue += txout.nValue;
     }
 
+    printf("CHAUTN ==> spendcltv, nTotalValue = %ld, nAmount = %ld\n", nTotalValue, nAmount);
     if (nTotalValue < nAmount)
     	throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Not enough coin in the wallet to spend");
 
@@ -945,6 +948,8 @@ Value spendcltv(const Array& params, bool fHelp)
     if (params.size() > 4 && params[4].type() != null_type && !params[4].get_str().empty())
         wtx.mapValue["to"]      = params[4].get_str();
 
+    // Set current time for nLockTime
+    wtx.nLockTime = 1703305051;
     if (pwalletMain->IsLocked())
         throw JSONRPCError(RPC_WALLET_UNLOCK_NEEDED, "Error: Please enter the wallet passphrase with walletpassphrase first.");
 

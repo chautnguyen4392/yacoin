@@ -1774,11 +1774,44 @@ bool CWallet::SelectCoinsMinConf(int64_t nTargetValue, int64_t nSpendTime, int n
 bool CWallet::SelectCoins(int64_t nTargetValue, int64_t nSpendTime,
 		set<pair<const CWalletTx*, unsigned int> > &setCoinsRet,
 		int64_t &nValueRet, const CCoinControl *coinControl,
-		const CScript *fromScriptPubKey) const
+		const CScript *fromScriptPubKey)
 {
     vector<COutput> vCoins;
     
     AvailableCoins(vCoins, true, coinControl, fromScriptPubKey);
+    BOOST_FOREACH(const COutput& out, vCoins)
+    {
+    	std::string msg = "CHAUTN ==> CWallet::SelectCoins, select UTXO with txid = " + out.tx->GetHash().GetHex();
+    	msg += "\n, vout = " + std::to_string(out.i);
+
+        ::int64_t nValue = out.tx->vout[out.i].nValue;
+        const CScript& pk = out.tx->vout[out.i].scriptPubKey;
+
+        CTxDestination address;
+        if (ExtractDestination(out.tx->vout[out.i].scriptPubKey, address))
+        {
+        	msg += "\n, address = " + CBitcoinAddress(address).ToString();
+            if (mapAddressBook.count(address))
+            	msg += "\n, account = " + mapAddressBook[address];
+        }
+        msg += "\n, scriptPubKey = " + HexStr(pk.begin(), pk.end());
+
+        if (pk.IsPayToScriptHash())
+        {
+            CTxDestination address;
+            if (ExtractDestination(pk, address))
+            {
+                const CScriptID& hash = boost::get<CScriptID>(address);
+                CScript redeemScript;
+                if (GetCScript(hash, redeemScript))
+                	msg += "\n, redeemScript = " + HexStr(redeemScript.begin(), redeemScript.end());
+            }
+        }
+        msg += "\n, amount = " + std::to_string(nValue);
+        msg += "\n, confirmations = " + std::to_string(out.nDepth);
+        msg += "\n, spendable = " + std::to_string(out.fSpendable);
+    	printf("%s\n", msg.c_str());
+    }
 
     // coin control -> return all selected outputs (we want all selected to go into the transaction for sure)
     if (coinControl && coinControl->HasSelected())
@@ -1877,6 +1910,8 @@ bool CWallet::CreateTransaction(const vector<pair<CScript, int64_t> > &vecSend,
                 wtxNew.fFromMe = true;
 
                 int64_t nTotalValue = nValue + nFeeRet;
+                printf("CHAUTN ==> CWallet::CreateTransaction, nValue = %ld, nFeeRet = %ld, nTotalValue = %ld\n", nValue, nFeeRet, nTotalValue);
+
                 // vouts to the payees
                 BOOST_FOREACH (const PAIRTYPE(CScript, int64_t)& s, vecSend)
                     wtxNew.vout.push_back(CTxOut(s.second, s.first));
@@ -1889,9 +1924,11 @@ bool CWallet::CreateTransaction(const vector<pair<CScript, int64_t> > &vecSend,
                 BOOST_FOREACH(PAIRTYPE(const CWalletTx*, unsigned int) pcoin, setCoins)
                 {
                     int64_t nCredit = pcoin.first->vout[pcoin.second].nValue;
+                    printf("CHAUTN ==> CWallet::CreateTransaction, coins with nCredit = %ld\n", nCredit);
                 }
 
                 int64_t nChange = nValueIn - nValue - nFeeRet;
+                printf("CHAUTN ==> CWallet::CreateTransaction, nValueIn = %ld, nValue = %ld, nFeeRet = %ld, nChange = %ld\n", nValueIn, nValue, nFeeRet, nChange);
                 if (nChange > 0)
                 {
                     // Fill a vout to ourself
@@ -1935,6 +1972,7 @@ bool CWallet::CreateTransaction(const vector<pair<CScript, int64_t> > &vecSend,
                 	{
                 		nSequenceIn = 0;
                 	}
+                	printf("CHAUTN ==> CWallet::CreateTransaction, nSequenceIn = %ld\n", nSequenceIn);
 					wtxNew.vin.push_back(
 							CTxIn(coin.first->GetHash(), coin.second, CScript(), nSequenceIn));
                 }
@@ -1942,8 +1980,17 @@ bool CWallet::CreateTransaction(const vector<pair<CScript, int64_t> > &vecSend,
                 // Sign
                 int nIn = 0;
                 BOOST_FOREACH(const PAIRTYPE(const CWalletTx*,unsigned int)& coin, setCoins)
+                {
+					printf(
+							"CHAUTN ==> CWallet::CreateTransaction, wtxNew.vin[nIn].nSequence = %ld, wtxNew.vin[nIn].IsFinal() = %d\n",
+							wtxNew.vin[nIn].nSequence,
+							wtxNew.vin[nIn].IsFinal());
                     if (!SignSignature(*this, *coin.first, wtxNew, nIn++))
+                    {
+                    	printf("CHAUTN ==> CWallet::CreateTransaction, Failed to sign signature\n");
                         return false;
+                    }
+                }
 
                 // Limit size
                 unsigned int nBytes = ::GetSerializeSize(*(CTransaction*)&wtxNew, SER_NETWORK, PROTOCOL_VERSION);
@@ -2923,6 +2970,7 @@ string CWallet::SendMoney(CScript scriptPubKey, int64_t nValue, CWalletTx& wtxNe
         printf("SendMoney() : %s", strError.c_str());
         return strError;
     }
+    printf("CHAUTN ==> CWallet::SendMoney, call CreateTransaction\n");
     if (!CreateTransaction(scriptPubKey, nValue, wtxNew, reservekey, nFeeRequired, NULL, fromScriptPubKey))
     {
         string strError;
@@ -2937,8 +2985,10 @@ string CWallet::SendMoney(CScript scriptPubKey, int64_t nValue, CWalletTx& wtxNe
     if (fAskFee && !uiInterface.ThreadSafeAskFee(nFeeRequired, _("Sending...")))
         return "ABORTED";
 
+    printf("CHAUTN ==> CWallet::SendMoney, call CommitTransaction\n");
     if (!CommitTransaction(wtxNew, reservekey))
         return _("Error: The transaction was rejected.  This might happen if some of the coins in your wallet were already spent, such as if you used a copy of wallet.dat and coins were spent in the copy but not marked as spent here.");
+    printf("CHAUTN ==> CWallet::SendMoney, complete CommitTransaction\n");
 
     return "";
 }

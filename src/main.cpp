@@ -540,9 +540,11 @@ bool CTransaction::IsStandard(string& strReason) const
     bool
         fIsStandard = oldIsStandard( strReason );
 
+    printf("CHAUTN ===> CTransaction::IsStandard, oldIsStandard = %d\n", fIsStandard);
     if( !fIsStandard )
     {
-        fIsStandard = IsStandard044( strReason ); 
+        fIsStandard = IsStandard044( strReason );
+        printf("CHAUTN ===> CTransaction::IsStandard, IsStandard044 = %d\n", fIsStandard);
     }
     return fIsStandard;
 }
@@ -560,6 +562,7 @@ bool CTransaction::IsStandard(string& strReason) const
 //
 bool CTransaction::AreInputsStandard(const MapPrevTx& mapInputs) const
 {
+	printf("CHAUTN ===> CTransaction::AreInputsStandard, vin.size() = %d\n", vin.size());
     if (IsCoinBase())
         return true; // Coinbases don't use vin normally
 
@@ -571,11 +574,18 @@ bool CTransaction::AreInputsStandard(const MapPrevTx& mapInputs) const
         txnouttype whichType;
         // get the scriptPubKey corresponding to this input:
         const CScript& prevScript = prev.scriptPubKey;
+        printf("CHAUTN ===> CTransaction::AreInputsStandard, prev.scriptPubKey = %s\n", HexStr(prevScript.begin(), prevScript.end()).c_str());
         if (!Solver(prevScript, whichType, vSolutions))
+        {
+        	printf("CHAUTN ===> CTransaction::AreInputsStandard 1\n");
             return false;
+        }
         int nArgsExpected = ScriptSigArgsExpected(whichType, vSolutions);
         if (nArgsExpected < 0)
+        {
+        	printf("CHAUTN ===> CTransaction::AreInputsStandard 2\n");
             return false;
+        }
 
         // Transactions with extra stuff in their scriptSigs are
         // non-standard. Note that this EvalScript() call will
@@ -584,29 +594,48 @@ bool CTransaction::AreInputsStandard(const MapPrevTx& mapInputs) const
         // IsStandard() call returns false
         vector<vector<unsigned char> > stack;
         if (!EvalScript(stack, vin[i].scriptSig, *this, i, false, 0))
+        {
+        	printf("CHAUTN ===> CTransaction::AreInputsStandard 3\n");
             return false;
+        }
 
         if (whichType == TX_SCRIPTHASH)
         {
+        	printf("CHAUTN ===> CTransaction::AreInputsStandard, whichType == TX_SCRIPTHASH\n");
             if (stack.empty())
+            {
+            	printf("CHAUTN ===> CTransaction::AreInputsStandard 4\n");
                 return false;
+            }
             CScript subscript(stack.back().begin(), stack.back().end());
             vector<vector<unsigned char> > vSolutions2;
             txnouttype whichType2;
             if (!Solver(subscript, whichType2, vSolutions2))
+            {
+            	printf("CHAUTN ===> CTransaction::AreInputsStandard 5\n");
                 return false;
+            }
             if (whichType2 == TX_SCRIPTHASH)
+            {
+            	printf("CHAUTN ===> CTransaction::AreInputsStandard 6\n");
                 return false;
+            }
 
             int tmpExpected;
             tmpExpected = ScriptSigArgsExpected(whichType2, vSolutions2);
             if (tmpExpected < 0)
+            {
+            	printf("CHAUTN ===> CTransaction::AreInputsStandard 7\n");
                 return false;
+            }
             nArgsExpected += tmpExpected;
         }
 
         if (stack.size() != (unsigned int)nArgsExpected)
+        {
+        	printf("CHAUTN ===> CTransaction::AreInputsStandard 8, stack.size() = %d, nArgsExpected = %d\n", stack.size(), nArgsExpected);
             return false;
+        }
     }
 
     return true;
@@ -992,12 +1021,14 @@ bool CMerkleTx::AcceptToMemoryPool(CTxDB& txdb, bool fCheckInputs)
 {
     if (fClient)
     {
+    	printf("CHAUTN ===> CMerkleTx::AcceptToMemoryPool, fClient\n");
         if (!IsInMainChain() && !ClientConnectInputs())
             return false;
         return CTransaction::AcceptToMemoryPool(txdb, false);
     }
     else
     {
+    	printf("CHAUTN ===> CMerkleTx::AcceptToMemoryPool 2\n");
         return CTransaction::AcceptToMemoryPool(txdb, fCheckInputs);
     }
 }

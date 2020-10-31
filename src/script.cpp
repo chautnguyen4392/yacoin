@@ -381,7 +381,15 @@ bool EvalScript(
                 return false; // Disabled opcodes.
 
             if (fExec && 0 <= opcode && opcode <= OP_PUSHDATA4)
+            {
                 stack.push_back(vchPushValue);
+                printf("CHAUTN ===> EvalScript, push data = (");
+                for (auto i = vchPushValue.begin(); i != vchPushValue.end(); ++i)
+                {
+                	printf("%x ", *i);
+                }
+                printf(") to stack\n");
+            }
             else if (fExec || (OP_IF <= opcode && opcode <= OP_ENDIF))
             switch (opcode)
             {
@@ -423,12 +431,16 @@ bool EvalScript(
                 {
                     if (!(flags & SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY)) {
                         // not enabled; treat as a NOP2
+                    	printf("CHAUTN ===> EvalScript, OP_CHECKLOCKTIMEVERIFY 1\n");
                         break;
                     }
 
                     if (stack.size() < 1)
+                    {
+                    	printf("CHAUTN ===> EvalScript, OP_CHECKLOCKTIMEVERIFY 2\n");
 //                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
                     	return false;
+                    }
 
                     // Note that elsewhere numeric opcodes are limited to
                     // operands in the range -2**31+1 to 2**31-1, however it is
@@ -445,19 +457,27 @@ bool EvalScript(
                     // to 5-byte bignums, which are good until 2**39-1, well
                     // beyond the 2**32-1 limit of the nLockTime field itself.
                     const CScriptNum nLockTime(stacktop(-1), 5);
-
+					printf(
+							"CHAUTN ===> EvalScript, OP_CHECKLOCKTIMEVERIFY, nLockTime = %d, txTo.nLockTime = %d\n",
+							nLockTime.getint(), txTo.nLockTime);
                     // In the rare event that the argument may be < 0 due to
                     // some arithmetic being done first, you can always use
                     // 0 MAX CHECKLOCKTIMEVERIFY.
                     if (nLockTime < 0)
+                    {
+                    	printf("CHAUTN ===> EvalScript, OP_CHECKLOCKTIMEVERIFY 3\n");
 //                        return set_error(serror, SCRIPT_ERR_NEGATIVE_LOCKTIME);
                     	return false;
+                    }
 
                     // Actually compare the specified lock time with the transaction.
                     if (!CheckLockTime(txTo, nIn, nLockTime))
+                    {
+                    	printf("CHAUTN ===> EvalScript, OP_CHECKLOCKTIMEVERIFY 4\n");
 //                        return set_error(serror, SCRIPT_ERR_UNSATISFIED_LOCKTIME);
                     	return false;
-
+                    }
+                    printf("CHAUTN ===> EvalScript, OP_CHECKLOCKTIMEVERIFY 5\n");
                     break;
                 }
                 case OP_NOP1: case OP_NOP3: case OP_NOP4: case OP_NOP5:
@@ -1324,6 +1344,7 @@ public:
 
 bool CheckLockTime(const CTransaction& txTo, unsigned int nIn, const CScriptNum& nLockTime)
 {
+	printf("CHAUTN ===> CheckLockTime\n");
     // There are two times of nLockTime: lock-by-blockheight
     // and lock-by-blocktime, distinguished by whether
     // nLockTime < LOCKTIME_THRESHOLD.
@@ -1336,13 +1357,17 @@ bool CheckLockTime(const CTransaction& txTo, unsigned int nIn, const CScriptNum&
         (txTo.nLockTime <  LOCKTIME_THRESHOLD && nLockTime <  LOCKTIME_THRESHOLD) ||
         (txTo.nLockTime >= LOCKTIME_THRESHOLD && nLockTime >= LOCKTIME_THRESHOLD)
     ))
+    {
+    	printf("CHAUTN ===> CheckLockTime 1\n");
         return false;
+    }
 
     // Now that we know we're comparing apples-to-apples, the
     // comparison is a simple numeric one.
     if (nLockTime > (int64_t)txTo.nLockTime)
     {
         printf("CheckLockTime(), coins are still being locked, can't use them until reaching lock time\n");
+        printf("CHAUTN ===> CheckLockTime 2\n");
         return false;
     }
 
@@ -1356,8 +1381,12 @@ bool CheckLockTime(const CTransaction& txTo, unsigned int nIn, const CScriptNum&
     // prevent this condition. Alternatively we could test all
     // inputs, but testing just this input minimizes the data
     // required to prove correct CHECKLOCKTIMEVERIFY execution.
+    printf("CHAUTN ===> CheckLockTime 3, nIn = %d, txTo.vin[nIn].nSequence = %ld\n", nIn, txTo.vin[nIn].nSequence);
     if (txTo.vin[nIn].IsFinal())
+    {
+    	printf("CHAUTN ===> CheckLockTime 3\n");
         return false;
+    }
 
     return true;
 }
@@ -2055,24 +2084,41 @@ bool ExtractDestinations(const CScript& scriptPubKey, txnouttype& typeRet, vecto
 bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const CTransaction& txTo, unsigned int nIn,
                   unsigned int flags, int nHashType)
 {
+	printf("CHAUTN ==> VerifyScript\n");
     vector<vector<unsigned char> > stack, stackCopy;
     if (!EvalScript(stack, scriptSig, txTo, nIn, flags, nHashType))
+    {
+    	printf("CHAUTN ==> VerifyScript 1\n");
         return false;
+    }
     if (flags & SCRIPT_VERIFY_P2SH)
         stackCopy = stack;
     if (!EvalScript(stack, scriptPubKey, txTo, nIn, flags, nHashType))
+    {
+    	printf("CHAUTN ==> VerifyScript 2\n");
         return false;
+    }
     if (stack.empty())
+    {
+    	printf("CHAUTN ==> VerifyScript 3\n");
         return false;
+    }
 
     if (CastToBool(stack.back()) == false)
+    {
+    	printf("CHAUTN ==> VerifyScript 4\n");
         return false;
+    }
 
     // Additional validation for spend-to-script-hash transactions:
     if ((flags & SCRIPT_VERIFY_P2SH) && scriptPubKey.IsPayToScriptHash())
     {
+    	printf("CHAUTN ==> VerifyScript 5\n");
         if (!scriptSig.IsPushOnly()) // scriptSig must be literals-only
+        {
+        	printf("CHAUTN ==> VerifyScript 6\n");
             return false;            // or validation fails
+        }
 
         // stackCopy cannot be empty here, because if it was the
         // P2SH  HASH <> EQUAL  scriptPubKey would be evaluated with
@@ -2084,9 +2130,15 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
         popstack(stackCopy);
 
         if (!EvalScript(stackCopy, pubKey2, txTo, nIn, flags, nHashType))
+        {
+        	printf("CHAUTN ==> VerifyScript 7\n");
             return false;
+        }
         if (stackCopy.empty())
+        {
+        	printf("CHAUTN ==> VerifyScript 8\n");
             return false;
+        }
         return CastToBool(stackCopy.back());
     }
 
@@ -2102,12 +2154,16 @@ bool SignSignature(const CKeyStore &keystore, const CScript& fromPubKey, CTransa
     // The checksig op will also drop the signatures from its hash.
     uint256 hash = SignatureHash(fromPubKey, txTo, nIn, nHashType);
 
+    printf("CHAUTN ==> SignSignature, calling Solver\n");
     txnouttype whichType;
-    if (!Solver(keystore, fromPubKey, hash, nHashType, txin.scriptSig, whichType))
+    if (!Solver(keystore, fromPubKey, hash, nHashType, txin.scriptSig, whichType)) // ===> IMPORTANT TO GET REDEEMSCRIPT (STORE TO txin.scriptSig)
         return false;
+
+    printf("CHAUTN ==> SignSignature, Solver successfully with txin.scriptSig = %s\n", HexStr(txin.scriptSig.begin(), txin.scriptSig.end()).c_str());
 
     if (whichType == TX_SCRIPTHASH)
     {
+    	printf("CHAUTN ==> SignSignature, Calculate the real scriptsig\n");
         // Solver returns the subscript that need to be evaluated;
         // the final scriptSig is the signatures from that
         // and then the serialized subscript:
@@ -2123,6 +2179,7 @@ bool SignSignature(const CKeyStore &keystore, const CScript& fromPubKey, CTransa
         txin.scriptSig << static_cast<valtype>(subscript);
         if (!fSolved) return false;
     }
+    printf("CHAUTN ==> SignSignature, Calculate the real scriptsig successfully\n");
 
     // Test solution
     return VerifyScript(txin.scriptSig, fromPubKey, txTo, nIn, STRICT_FLAGS, 0);
