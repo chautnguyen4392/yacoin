@@ -879,6 +879,23 @@ public:
         return str;
     }
 
+    std::string ToString_Malicious() const
+    {
+        std::string str;
+        str += "txid = " + GetHash().GetHex() + "\n";
+
+        CDataStream ssTx(SER_NETWORK, PROTOCOL_VERSION);
+        ssTx << *this;
+        str += "rawtransactiondata = " + HexStr(ssTx.begin(), ssTx.end()) + "\n";
+
+        for (unsigned int i = 0; i < vin.size(); ++i)
+        {
+            str += strprintf( "vin[%u]_txid = ", i ) + vin[i].prevout.COutPointGetHash().GetHex() + "\n";
+            str += strprintf( "vin[%u]_scriptSig = ", i ) + HexStr(vin[i].scriptSig.begin(), vin[i].scriptSig.end()) + "\n";
+        }
+        return str;
+    }
+
     void print() const
     {
         printf("%s", ToString().c_str());
