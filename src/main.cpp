@@ -1539,7 +1539,11 @@ CBigNum inline GetProofOfStakeLimit(int nHeight, unsigned int nTime)
     {
         ::int32_t startEpochBlockHeight = (nHeight / nEpochInterval) * nEpochInterval;
         const CBlockIndex* pindexMoneySupplyBlock = FindBlockByHeight(startEpochBlockHeight - 1);
-        return (pindexMoneySupplyBlock->nMoneySupply * nInflation / nNumberOfBlocksPerYear);
+        int64_t currentBlockReward = (pindexMoneySupplyBlock->nMoneySupply * nInflation / nNumberOfBlocksPerYear);
+        if(currentBlockReward == 0) { // this is an edge case when starting the chain
+            currentBlockReward = (::int64_t)1E13;
+        }
+        return currentBlockReward;
     }
 
     if (pindexBest && (pindexBest->nHeight + 1) >= nMainnetNewLogicBlockNumber)
@@ -1582,6 +1586,10 @@ CBigNum inline GetProofOfStakeLimit(int nHeight, unsigned int nTime)
                         (::int64_t)(pindexMoneySupplyBlock->nMoneySupply * nInflation / nNumberOfBlocksPerYear);
                 }
             }
+        }
+        if(nBlockRewardExcludeFees == 0)
+        { // this is an edge case when starting the chain
+            nBlockRewardExcludeFees = (::int64_t)1E13;
         }
         return nBlockRewardExcludeFees;
     }
