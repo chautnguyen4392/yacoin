@@ -49,12 +49,14 @@ bool CTxDB::ReadTxIndex(uint256 hash, CTxIndex& txindex)
 {
     Yassert(!fClient);
     txindex.SetNull();
+    printf("CHAUTN ===> txdb-bdb, CTxDB::ReadTxIndex, hash = %s\n", hash.GetHex().c_str());
     return Read(make_pair(string("tx"), hash), txindex);
 }
 
 bool CTxDB::UpdateTxIndex(uint256 hash, const CTxIndex& txindex)
 {
     Yassert(!fClient);
+    printf("CHAUTN ===> txdb-bdb, CTxDB::UpdateTxIndex, hash = %s\n", hash.GetHex().c_str());
     return Write(make_pair(string("tx"), hash), txindex);
 }
 
@@ -65,6 +67,7 @@ bool CTxDB::AddTxIndex(const CTransaction& tx, const CDiskTxPos& pos, int nHeigh
     // Add to tx index
     uint256 hash = tx.GetHash();
     CTxIndex txindex(pos, tx.vout.size());
+    printf("CHAUTN ===> txdb-bdb, CTxDB::AddTxIndex, hash = %s\n", hash.GetHex().c_str());
     return Write(make_pair(string("tx"), hash), txindex);
 }
 
