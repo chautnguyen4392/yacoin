@@ -5754,65 +5754,64 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
         CInv inv(MSG_TX, tx.GetHash());
         pfrom->AddInventoryKnown(inv);
 
-        printf("CHAUTN ===> NOT RELAY a transaction with below info:\n%s\n", tx.ToString_Malicious().c_str());
-//        bool
-//            fMissingInputs = false;
-//        if (tx.AcceptToMemoryPool(txdb, true, &fMissingInputs))
-//        {
-//            SyncWithWallets(tx, NULL, true);
-//            RelayTransaction(tx, inv.hash);
-//            mapAlreadyAskedFor.erase(inv);
-//            vWorkQueue.push_back(inv.hash);
-//            vEraseQueue.push_back(inv.hash);
-//
-//            // Recursively process any orphan transactions that depended on this one
-//            for (unsigned int i = 0; i < vWorkQueue.size(); ++i)
-//            {
-//                uint256 hashPrev = vWorkQueue[i];
-//                for (set<uint256>::iterator mi = mapOrphanTransactionsByPrev[hashPrev].begin();
-//                     mi != mapOrphanTransactionsByPrev[hashPrev].end();
-//                     ++mi)
-//                {   //<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< this part is different???????????????????
-//                    const uint256
-//                        & orphanTxHash = *mi;
-//
-//                    CTransaction
-//                        & orphanTx = mapOrphanTransactions[orphanTxHash];
-//                    bool
-//                        fMissingInputs2 = false;
-//
-//                    if (orphanTx.AcceptToMemoryPool(txdb, true, &fMissingInputs2))
-//                    {
-//                        printf("   accepted orphan tx %s\n", orphanTxHash.ToString().substr(0,10).c_str());
-//                        SyncWithWallets(tx, NULL, true);
-//                        RelayTransaction(orphanTx, orphanTxHash);
-//                        mapAlreadyAskedFor.erase(CInv(MSG_TX, orphanTxHash));
-//                        vWorkQueue.push_back(orphanTxHash);
-//                        vEraseQueue.push_back(orphanTxHash);
-//                    }
-//                    else if (!fMissingInputs2)
-//                    {
-//                        // invalid orphan
-//                        vEraseQueue.push_back(orphanTxHash);
-//                        printf("   removed invalid orphan tx %s\n", orphanTxHash.ToString().substr(0,10).c_str());
-//                    }
-//                }
-//            }
-//
-//            BOOST_FOREACH(uint256 hash, vEraseQueue)
-//                EraseOrphanTx(hash);
-//        }
-//        else if (fMissingInputs)
-//        {
-//            AddOrphanTx(tx);
-//
-//            // DoS prevention: do not allow mapOrphanTransactions to grow unbounded
-//            unsigned int nEvicted = LimitOrphanTxSize(MAX_ORPHAN_TRANSACTIONS);
-//            if (nEvicted > 0)
-//                printf("mapOrphan overflow, removed %u tx\n", nEvicted);
-//        }
-//        if (tx.nDoS)
-//            (void)pfrom->Misbehaving(tx.nDoS);
+        bool 
+            fMissingInputs = false;
+        if (tx.AcceptToMemoryPool(txdb, true, &fMissingInputs))
+        {
+            SyncWithWallets(tx, NULL, true);
+            RelayTransaction(tx, inv.hash);
+            mapAlreadyAskedFor.erase(inv);
+            vWorkQueue.push_back(inv.hash);
+            vEraseQueue.push_back(inv.hash);
+
+            // Recursively process any orphan transactions that depended on this one
+            for (unsigned int i = 0; i < vWorkQueue.size(); ++i)
+            {
+                uint256 hashPrev = vWorkQueue[i];
+                for (set<uint256>::iterator mi = mapOrphanTransactionsByPrev[hashPrev].begin();
+                     mi != mapOrphanTransactionsByPrev[hashPrev].end();
+                     ++mi)
+                {   //<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< this part is different???????????????????
+                    const uint256
+                        & orphanTxHash = *mi;
+
+                    CTransaction
+                        & orphanTx = mapOrphanTransactions[orphanTxHash];
+                    bool 
+                        fMissingInputs2 = false;
+
+                    if (orphanTx.AcceptToMemoryPool(txdb, true, &fMissingInputs2))
+                    {
+                        printf("   accepted orphan tx %s\n", orphanTxHash.ToString().substr(0,10).c_str());
+                        SyncWithWallets(tx, NULL, true);
+                        RelayTransaction(orphanTx, orphanTxHash);
+                        mapAlreadyAskedFor.erase(CInv(MSG_TX, orphanTxHash));
+                        vWorkQueue.push_back(orphanTxHash);
+                        vEraseQueue.push_back(orphanTxHash);
+                    }
+                    else if (!fMissingInputs2)
+                    {
+                        // invalid orphan
+                        vEraseQueue.push_back(orphanTxHash);
+                        printf("   removed invalid orphan tx %s\n", orphanTxHash.ToString().substr(0,10).c_str());
+                    }
+                }
+            }
+
+            BOOST_FOREACH(uint256 hash, vEraseQueue)
+                EraseOrphanTx(hash);
+        }
+        else if (fMissingInputs)
+        {
+            AddOrphanTx(tx);
+
+            // DoS prevention: do not allow mapOrphanTransactions to grow unbounded
+            unsigned int nEvicted = LimitOrphanTxSize(MAX_ORPHAN_TRANSACTIONS);
+            if (nEvicted > 0)
+                printf("mapOrphan overflow, removed %u tx\n", nEvicted);
+        }
+        if (tx.nDoS) 
+            (void)pfrom->Misbehaving(tx.nDoS);
     }
 
     //_________________________________________________________________________
