@@ -3573,6 +3573,12 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos)
         setStakeSeen.insert(make_pair(pindexNew->prevoutStake, pindexNew->nStakeTime));
     pindexNew->phashBlock = &((*mi).first);
 
+    if( 0 == pindexNew->nHeight )
+    {
+        printf("CHAUTN ===> Need to consider if we need to remove this line or not");
+        pindexNew->nMoneySupply = pindexNew->nMint = nSimulatedMOneySupplyAtFork;
+   }
+
     // Write to disk block index
     CTxDB txdb;
     if (!txdb.TxnBegin())
