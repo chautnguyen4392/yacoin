@@ -163,7 +163,7 @@ static CBigNum bnInitialHashTargetTestNet(~uint256(0) >> 8);    // test
 //static CBigNum bnInitialHashTarget(~uint256(0) >> 16);
 
 int
-    nCoinbaseMaturityInBlocks = 500;
+    nCoinbaseMaturityInBlocks = 6;
 
 int 
     nCoinbaseMaturity = nCoinbaseMaturityInBlocks;  //500;
@@ -566,7 +566,7 @@ int GetCoinbaseMaturityOffset()
     }
     else
     {
-        return 20;
+        return 0;
     }
 }
 
