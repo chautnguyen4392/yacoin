@@ -3814,35 +3814,38 @@ bool CBlock::AcceptBlock()
     if (!Checkpoints::CheckHardened(nHeight, hash))
         return DoS(100, error("AcceptBlock () : rejected by hardened checkpoint lock-in at %d", nHeight));
 
-    bool cpSatisfies = Checkpoints::CheckSync(hash, pindexPrev);
+    if (nBestHeight < nMainnetNewLogicBlockNumber)
+    {
+        bool cpSatisfies = Checkpoints::CheckSync(hash, pindexPrev);
 
-    // Check that the block satisfies synchronized checkpoint
-    if (
-        (CheckpointsMode == Checkpoints::STRICT_) &&
-/**************
-    // using STRICT instead of STRICT_ collides with windef.h
-    // and strangely cause gcc to fail when WIN32 is true & QT_GUI
-    // but not WIN32 gcc compiling the daemon???
-    // so I changed to STRICT_ which doesn't collide!
-    // if we don't then this if would have to look like
-    if (
-        (CheckpointsMode == 
-#ifdef WIN32 && QT_GUI
-         0
-#else
-         Checkpoints::STRICT
-#endif
-        ) && 
-***************/
-        !cpSatisfies
-       )
-        return error("AcceptBlock () : rejected by synchronized checkpoint");
+        // Check that the block satisfies synchronized checkpoint
+        if (
+            (CheckpointsMode == Checkpoints::STRICT_) &&
+    /**************
+        // using STRICT instead of STRICT_ collides with windef.h
+        // and strangely cause gcc to fail when WIN32 is true & QT_GUI
+        // but not WIN32 gcc compiling the daemon???
+        // so I changed to STRICT_ which doesn't collide!
+        // if we don't then this if would have to look like
+        if (
+            (CheckpointsMode ==
+    #ifdef WIN32 && QT_GUI
+             0
+    #else
+             Checkpoints::STRICT
+    #endif
+            ) &&
+    ***************/
+            !cpSatisfies
+           )
+            return error("AcceptBlock () : rejected by synchronized checkpoint");
 
-    if (
-        (CheckpointsMode == Checkpoints::ADVISORY) && 
-        !cpSatisfies
-       )
-        strMiscWarning = _("WARNING: syncronized checkpoint violation detected, but skipped!");
+        if (
+            (CheckpointsMode == Checkpoints::ADVISORY) &&
+            !cpSatisfies
+           )
+            strMiscWarning = _("WARNING: syncronized checkpoint violation detected, but skipped!");
+    }
 
     // Enforce rule that the coinbase starts with serialized block height
     CScript expect = CScript() << nHeight;
@@ -3881,7 +3884,10 @@ bool CBlock::AcceptBlock()
     }}
 
     // ppcoin: check pending sync-checkpoint
-    Checkpoints::AcceptPendingSyncCheckpoint();
+    if (nBestHeight < nMainnetNewLogicBlockNumber)
+    {
+        Checkpoints::AcceptPendingSyncCheckpoint();
+    }
 
     return true;
 }
@@ -4117,15 +4123,19 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
             mapProofOfStake.insert(make_pair(hash, hashProofOfStake));
     }
 
-    CBlockIndex
-        * pcheckpoint = Checkpoints::GetLastSyncCheckpoint();
-
-    if (
-        pcheckpoint && 
-        pblock->hashPrevBlock != hashBestChain && 
-        !Checkpoints::WantedByPendingSyncCheckpoint(hash)
-       )
+    CBlockIndex* pcheckpoint;
+    if (nBestHeight >= nMainnetNewLogicBlockNumber)
     {
+        pcheckpoint = Checkpoints::GetLastSyncCheckpoint();
+    }
+    else
+    {
+        pcheckpoint = Checkpoints::GetLastCheckpoint(mapBlockIndex);
+    }
+
+    if (pcheckpoint && pblock->hashPrevBlock != hashBestChain
+            && ((nBestHeight >= nMainnetNewLogicBlockNumber)
+                    || !Checkpoints::WantedByPendingSyncCheckpoint(hash))) {
         // Extra checks to prevent "fill up memory by spamming with bogus blocks"
         ::int64_t 
             deltaTime = pblock->GetBlockTime() - pcheckpoint->nTime;
@@ -4177,7 +4187,7 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
     }
 
     // ppcoin: ask for pending sync-checkpoint if any
-    if (!IsInitialBlockDownload())
+    if (!IsInitialBlockDownload() && nBestHeight < nMainnetNewLogicBlockNumber)
         Checkpoints::AskForPendingSyncCheckpoint(pfrom);
 
     // If don't already have its previous block, shunt it off to holding area until we get it
@@ -4244,7 +4254,7 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
     printf("ProcessBlock: ACCEPTED %s BLOCK\n", pblock->IsProofOfStake()?"POS":"POW");
 
     // ppcoin: if responsible for sync-checkpoint send it
-    if (pfrom && !CSyncCheckpoint::strMasterPrivKey.empty())
+    if (nBestHeight < nMainnetNewLogicBlockNumber && pfrom && !CSyncCheckpoint::strMasterPrivKey.empty())
         Checkpoints::SendSyncCheckpoint(Checkpoints::AutoSelectSyncCheckpoint());
 #ifdef QT_GUI
     //uiInterface.NotifyBlocksChanged();
@@ -5277,7 +5287,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
         cPeerBlockCounts.input(pfrom->nStartingHeight);
 
         // ppcoin: ask for pending sync-checkpoint if any
-        if (!IsInitialBlockDownload())
+        if (!IsInitialBlockDownload() && nBestHeight < nMainnetNewLogicBlockNumber)
             Checkpoints::AskForPendingSyncCheckpoint(pfrom);
     }
 
@@ -5662,7 +5672,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
     //_________________________________________________________________________
     // rx'ed a checkpoint relay request?
 
-    else if (strCommand == "checkpoint")
+    else if (strCommand == "checkpoint" && nBestHeight < nMainnetNewLogicBlockNumber)
     {
         CSyncCheckpoint checkpoint;
         vRecv >> checkpoint;

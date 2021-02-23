@@ -107,6 +107,7 @@ namespace Checkpoints
         return NULL;
     }
 
+    /* BELOW CODES ARE DEPRECATED */
     // ppcoin: synchronized checkpoint (centrally broadcasted)
     uint256 hashSyncCheckpoint = 0;
     uint256 hashPendingCheckpoint = 0;
@@ -115,7 +116,7 @@ namespace Checkpoints
     uint256 hashInvalidCheckpoint = 0;
     CCriticalSection cs_hashSyncCheckpoint;
 
-    // ppcoin: get last synchronized checkpoint
+    // ppcoin: get last synchronized checkpoint (CHECKED)
     CBlockIndex* GetLastSyncCheckpoint()
     {
         LOCK(cs_hashSyncCheckpoint);
@@ -130,7 +131,7 @@ namespace Checkpoints
         return NULL;
     }
 
-    // ppcoin: only descendant of current sync-checkpoint is allowed
+    // ppcoin: only descendant of current sync-checkpoint is allowed (CHECKED)
     bool ValidateSyncCheckpoint(uint256 hashCheckpoint)
     {
         if (!mapBlockIndex.count(hashSyncCheckpoint))
@@ -173,6 +174,7 @@ namespace Checkpoints
         return true;
     }
 
+    // (CHECKED)
     bool WriteSyncCheckpoint(const uint256& hashCheckpoint)
     {
         CTxDB txdb;
@@ -193,6 +195,7 @@ namespace Checkpoints
         return true;
     }
 
+    // (CHECKED)
     bool AcceptPendingSyncCheckpoint()
     {
         LOCK(cs_hashSyncCheckpoint);
@@ -239,7 +242,7 @@ namespace Checkpoints
         return false;
     }
 
-    // Automatically select a suitable sync-checkpoint 
+    // Automatically select a suitable sync-checkpoint (CHECKED)
     uint256 AutoSelectSyncCheckpoint()
     {
         const CBlockIndex *pindex = pindexBest;
@@ -249,7 +252,7 @@ namespace Checkpoints
         return pindex->GetBlockHash();
     }
 
-    // Check against synchronized checkpoint
+    // Check against synchronized checkpoint (CHECKED)
     bool CheckSync(const uint256& hashBlock, const CBlockIndex* pindexPrev)
     {
         if (fTestNet) return true; // Testnet has no checkpoints
@@ -277,6 +280,7 @@ namespace Checkpoints
         return true;
     }
 
+    // (CHECKED)
     bool WantedByPendingSyncCheckpoint(uint256 hashBlock)
     {
         LOCK(cs_hashSyncCheckpoint);
@@ -290,7 +294,7 @@ namespace Checkpoints
         return false;
     }
 
-    // ppcoin: reset synchronized checkpoint to last hardened checkpoint
+    // ppcoin: reset synchronized checkpoint to last hardened checkpoint (CHECKED)
     bool ResetSyncCheckpoint()
     {
         LOCK(cs_hashSyncCheckpoint);
@@ -336,6 +340,7 @@ namespace Checkpoints
         return false;
     }
 
+    // (CHECKED)
     void AskForPendingSyncCheckpoint(CNode* pfrom)
     {
         LOCK(cs_hashSyncCheckpoint);
@@ -348,6 +353,7 @@ namespace Checkpoints
             pfrom->AskFor(CInv(MSG_BLOCK, hashPendingCheckpoint));
     }
 
+    // (CHECKED)
     bool SetCheckpointPrivKey(std::string strPrivKey)
     {
         // Test signing a sync-checkpoint with genesis block
@@ -368,6 +374,7 @@ namespace Checkpoints
         return true;
     }
 
+    // (CHECKED)
     bool SendSyncCheckpoint(uint256 hashCheckpoint)
     {
         CSyncCheckpoint checkpoint;
@@ -399,7 +406,7 @@ namespace Checkpoints
         return true;
     }
 
-    // Is the sync-checkpoint outside maturity window?
+    // Is the sync-checkpoint outside maturity window? (CHECKED)
     bool IsMatureSyncCheckpoint()
     {
         LOCK(cs_hashSyncCheckpoint);
