@@ -565,6 +565,21 @@ bool CTxDB::LoadBlockIndex()
         pindexNew->nBits          = diskindex.nBits;
         pindexNew->nNonce         = diskindex.nNonce;
 
+        uint256 tmpBlockhash;
+        if (fStoreBlockHashToDb && !ReadBlockHash(diskindex.nFile, diskindex.nBlockPos, tmpBlockhash))
+        {
+            printf("CTxDB::LoadBlockIndex(), write block hash for "
+                    "diskindex.nHeight = %d, "
+                    "diskindex.nFile = %d, "
+                    "diskindex.nBlockPos = %d, "
+                    "blockHash = %s\n",
+                    diskindex.nHeight,
+                    diskindex.nFile,
+                    diskindex.nBlockPos,
+                    blockHash.ToString().c_str());
+            WriteBlockHash(diskindex);
+        }
+
         if (pindexNew->nHeight >= bestEpochIntervalHeight &&
             ((pindexNew->nHeight % nEpochInterval == 0) || (pindexNew->nHeight == nMainnetNewLogicBlockNumber)))
         {
