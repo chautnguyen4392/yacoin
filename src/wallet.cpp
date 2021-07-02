@@ -2384,6 +2384,7 @@ bool CWallet::CreateCoinStake(
             uint256 
                 hashBlockFrom;
             // Calculate the block header hash
+            printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
             hashBlockFrom = block.GetHash();
             // Calculate the kernel stake modifiers
             if (
@@ -2680,6 +2681,7 @@ bool CWallet::CreateCoinStake(
                         continue;
 
                     uint64_t nStakeModifier = 0;
+                    printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
                     if (!GetKernelStakeModifier(block.GetHash(), nStakeModifier))
                         continue;
 

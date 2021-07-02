@@ -535,6 +535,7 @@ bool CheckSequenceLocks(const CTransaction &tx, int flags)
             }
             else
             {
+                printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
                 hashBlock = block.GetHash();
             }
 
@@ -845,6 +846,7 @@ int CMerkleTx::SetMerkleBranch(const CBlock* pblock)
         }
 
         // Update the tx's hashBlock
+        printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
         hashBlock = pblock->GetHash();
 
         // Locate the transaction
@@ -1260,6 +1262,7 @@ int CTxIndex::GetDepthInMainChain() const
     if (!block.ReadFromDisk(pos.Get_CDiskTxPos_nFile(), pos.Get_CDiskTxPos_nBlockPos(), false))
         return 0;
     // Find the block in the index
+    printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
     map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(block.GetHash());
     if (mi == mapBlockIndex.end())
         return 0;
@@ -1288,7 +1291,10 @@ bool GetTransaction(const uint256 &hash, CTransaction &tx, uint256 &hashBlock)
         {
             CBlock block;
             if (block.ReadFromDisk(txindex.pos.Get_CDiskTxPos_nFile(), txindex.pos.Get_CDiskTxPos_nBlockPos(), false))
+            {
+                printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
                 hashBlock = block.GetHash();
+            }
             return true;
         }
     }
@@ -1341,6 +1347,7 @@ bool CBlock::ReadFromDisk(const CBlockIndex* pindex, bool fReadTransactions, boo
     if (!ReadFromDisk(pindex->nFile, pindex->nBlockPos, fReadTransactions, fCheckHeader))
         return false;
 
+    printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
     if (
         fCheckHeader &&
         (GetHash() != pindex->GetBlockHash())
@@ -1379,6 +1386,7 @@ bool CBlock::ReadFromDisk(unsigned int nFile, unsigned int nBlockPos,
         printf("CBlock::ReadFromDisk(): can't read block hash at file = %d, block pos = %d\n", nFile, nBlockPos);
     }
     // Check the header
+    printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
     if (fReadTransactions && IsProofOfWork()
             && (fCheckHeader && !CheckProofOfWork(GetHash(), nBits)))
         return error("CBlock::ReadFromDisk() : errors in block header");
@@ -1391,6 +1399,7 @@ uint256 static GetOrphanRoot(const CBlock* pblock)
     // Work back to the first block in the orphan chain
     while (mapOrphanBlocks.count(pblock->hashPrevBlock))
         pblock = mapOrphanBlocks[pblock->hashPrevBlock];
+    printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
     return pblock->GetHash();
 }
 
@@ -3335,6 +3344,7 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew)
 // Called from inside SetBestChain: attaches a block to the new best chain being built
 bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew) //<<<<<<<<<
 {
+    printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
     uint256 hash = GetHash();
 
     // Adding to current best branch
@@ -3359,6 +3369,7 @@ bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew) //<<<<<<<<<
 
 bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew)
 {
+    printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
     uint256 hash = GetHash();
 
     if (!txdb.TxnBegin())
@@ -3587,6 +3598,7 @@ bool CBlock::GetCoinAge(::uint64_t& nCoinAge) const
 bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos)
 {
     // Check for duplicate
+    printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
     uint256 hash = GetHash();
     if (mapBlockIndex.count(hash))
         return error("AddToBlockIndex() : %s already exists", hash.ToString().substr(0,20).c_str());
@@ -3773,6 +3785,7 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckSig) c
             return DoS(50, error("CheckBlock () : zero nonce in proof-of-work block"));
 
         // Check proof of work matches claimed amount
+        printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
         if (fCheckPOW && !CheckProofOfWork(GetHash(), nBits))
             return DoS(50, error("CheckBlock () : proof of work failed"));
 
@@ -3835,6 +3848,7 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckSig) c
 bool CBlock::AcceptBlock()
 {
     // Check for duplicate
+    printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
     uint256 hash = GetHash();
     if (mapBlockIndex.count(hash))
         return error("AcceptBlock () : block already in mapBlockIndex");
@@ -4128,6 +4142,7 @@ bool CBlockIndex::IsSuperMajority(int minVersion, const CBlockIndex* pstart, uns
 bool ProcessBlock(CNode* pfrom, CBlock* pblock)
 {
     // Check for duplicate
+    printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
     uint256 hash = pblock->GetHash();
     if (mapBlockIndex.count(hash))
         return error("ProcessBlock () : already have block %d %s", mapBlockIndex[hash]->nHeight, hash.ToString().substr(0,20).c_str());
@@ -4298,7 +4313,11 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
                 * pblockOrphan = (*mi).second;
             Sleep( nOneMillisecond );  // let's try this arbitrary value? 
             if (pblockOrphan->AcceptBlock())
+            {
+                printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
                 vWorkQueue.push_back(pblockOrphan->GetHash());
+            }
+            printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
             mapOrphanBlocks.erase(pblockOrphan->GetHash());
             setStakeSeenOrphan.erase(pblockOrphan->GetProofOfStake());
             delete pblockOrphan;
@@ -4345,6 +4364,7 @@ bool CBlock::SignBlock044(const CKeyStore& keystore)
                     continue;
                 if (key.GetPubKey() != vchPubKey)
                     continue;
+                printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
                 if(
                     !key.Sign(
                                 GetHash(),    //<<<<<<<<<<<<<<< test
@@ -4375,6 +4395,7 @@ bool CBlock::SignBlock044(const CKeyStore& keystore)
             if (key.GetPubKey() != vchPubKey)
                 return false;
 
+            printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
             return key.Sign(GetHash(), vchBlockSig);
         }
     }
@@ -4465,6 +4486,7 @@ bool CBlock::SignBlock(CWallet& wallet)
                 hashMerkleRoot = BuildMerkleTree();
 
                 // append a signature to our block
+                printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
                 return key.Sign(GetHash(), vchBlockSig);
             }
         }
@@ -4478,6 +4500,7 @@ bool CBlock::SignBlock(CWallet& wallet)
 // ppcoin: check block signature
 bool CBlock::CheckBlockSignature() const
 {
+    printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
     if (GetHash() == hashGenesisBlock)  // from 0.4.4 code
         return vchBlockSig.empty();
 
@@ -4505,6 +4528,7 @@ bool CBlock::CheckBlockSignature() const
                     continue;
                 if (vchBlockSig.empty())
                     continue;
+                printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
                 if(!key.Verify(GetHash(), vchBlockSig))
                     continue;
 
@@ -4533,6 +4557,7 @@ bool CBlock::CheckBlockSignature() const
             if (vchBlockSig.empty())
                 return false;
 
+            printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
             bool
                 fVerifyOK = key.Verify(GetHash(), vchBlockSig);
 
@@ -4754,6 +4779,7 @@ bool LoadBlockIndex(bool fAllowNew)
         uint256
             the_target = bnTarget.getuint256();
     
+        printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
         uint256
             the_hash = block.GetHash();
 ////////////////////////////////////
@@ -4769,6 +4795,7 @@ bool LoadBlockIndex(bool fAllowNew)
 		{
 			++(block.nNonce);
             ++nCount;
+            printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
             the_hash = block.GetHash();
             printf(
                     "block.nNonce == %08X"
@@ -4799,6 +4826,7 @@ bool LoadBlockIndex(bool fAllowNew)
               );
         block.SignBlock(*pwalletMain);
         block.print();
+        printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
         Yassert(block.GetHash() == (!fTestNet ? hashGenesisBlock : hashGenesisBlockTestNet));
         Yassert(block.CheckBlock());
         // Start new block file
@@ -4907,6 +4935,7 @@ void PrintBlockTree()
         // print item
         CBlock block;
         block.ReadFromDisk(pindex);
+        printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
         printf("%d (%u,%u) %s  %08x  %s  mint %7s  tx %" PRIszu "",
             pindex->nHeight,
             pindex->nFile,
@@ -5874,6 +5903,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
             block;
 
         vRecv >> block;
+        printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
         uint256 hashBlock = block.GetHash();
 
         printf(

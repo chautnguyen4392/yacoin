@@ -527,6 +527,7 @@ bool CheckStakeKernelHash(
     }
     else 
     {
+        printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
         if (
             !GetKernelStakeModifier(
                                     blockFrom.GetHash(), 
@@ -545,6 +546,7 @@ bool CheckStakeKernelHash(
     hashProofOfStake = Hash(ss.begin(), ss.end());
     if (fPrintProofOfStake)
     {
+        printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
         printf(
                 "CheckStakeKernelHash (1) : using modifier 0x%016" PRIx64 " "
                 "at height=%d "
@@ -586,6 +588,7 @@ bool CheckStakeKernelHash(
         return false;
     if (fDebug)
     {
+        printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
         printf(
             "CheckStakeKernelHash (2) (good): using modifier 0x%016" PRIx64 " "
             "at height=%d "
@@ -681,6 +684,7 @@ bool CheckStakeKernelHash(
     //targetProofOfStake = (bnCoinDayWeight * bnTargetPerCoinDay).getuint256();
 
     // Calculate hash
+    printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
     uint256 hashBlockFrom = blockFrom.GetHash();
 
     uint64_t nStakeModifier = 0;

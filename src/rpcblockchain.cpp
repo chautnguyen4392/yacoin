@@ -111,6 +111,7 @@ double GetPoSKernelPS()
 Object blockToJSON(const CBlock& block, const CBlockIndex* blockindex, bool fPrintTransactionDetail)
 {
     Object result;
+    printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
     result.push_back(Pair("hash", block.GetHash().GetHex()));
     CMerkleTx txGen(block.vtx[0]);
     txGen.SetMerkleBranch(&block);

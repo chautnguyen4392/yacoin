@@ -861,6 +861,7 @@ void FormatHashBuffers_64bit_nTime(char* pblock, char* pmidstate, char* pdata, c
 
 bool CheckWork(CBlock* pblock, CWallet& wallet, CReserveKey& reservekey)
 {
+    printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
     uint256 hashBlock = pblock->GetHash();
     uint256 hashTarget = CBigNum().SetCompact(pblock->nBits).getuint256();
 
@@ -920,6 +921,7 @@ bool CheckStake(CBlock* pblock, CWallet& wallet)
     uint256 
         proofHash = 0, 
         hashTarget = 0;
+    printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
     uint256 
         hashBlock = pblock->GetHash();
 
@@ -1260,6 +1262,7 @@ static void YacoinMiner(CWallet *pwallet)  // here fProofOfStake is always false
                             );
     #endif
 #endif
+                printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
                 Yassert(result == pblock->GetHash());
                 if (!pblock->SignBlock(*pwalletMain))   // wallet is locked
                 {
@@ -1271,6 +1274,7 @@ static void YacoinMiner(CWallet *pwallet)  // here fProofOfStake is always false
                 SetThreadPriority(THREAD_PRIORITY_NORMAL);
                 if( CheckWork(pblock.get(), *pwalletMain, reservekey) )
                 {
+                    printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
                     printf(
                             "\nCPUMiner : proof-of-work block found \n"
                             "%s"

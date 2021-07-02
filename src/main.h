@@ -1361,14 +1361,18 @@ public:
     {
         
             // Take last bit of block hash as entropy bit
+        printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
             unsigned int nEntropyBit = ((GetHash().Get64()) & 1ULL);
             if (fDebug && GetBoolArg("-printstakemodifier"))
+            {
+                printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
                 printf(
                         "GetStakeEntropyBit: nTime=%" PRId64 " \nhashBlock=%s\nnEntropyBit=%u\n",
                         nTime, 
                         GetHash().ToString().c_str(), 
                         nEntropyBit
                       );
+            }
    			return nEntropyBit;
  
     }
@@ -1477,6 +1481,7 @@ public:
 
     void print() const
     {
+        printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
         printf("CBlock(\n"
                 "hash=%s,\n"
                 "ver=%d,\n"
@@ -1870,6 +1875,7 @@ public:
         block.nBits           = nBits;
         block.nNonce          = nNonce;
 
+        printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
         const_cast<CDiskBlockIndex*>(this)->blockHash = block.GetHash();
 
         return blockHash;
