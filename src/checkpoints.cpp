@@ -260,6 +260,10 @@ namespace Checkpoints
         Yassert(mapBlockIndex.count(hashSyncCheckpoint));
         const CBlockIndex* pindexSync = mapBlockIndex[hashSyncCheckpoint];
 
+    printf(
+            "TACA => CheckSync, hashSyncCheckpoint = %s, nHeight = %d, pindexSync->nHeight = %d\n",
+            hashSyncCheckpoint.ToString().c_str(), nHeight,
+            pindexSync->nHeight);
         if (nHeight > pindexSync->nHeight)
         {
             // trace back to same height as sync-checkpoint

@@ -1359,17 +1359,21 @@ bool CBlock::ReadFromDisk(const CBlockIndex* pindex, bool fReadTransactions, boo
 bool CBlock::ReadFromDisk(unsigned int nFile, unsigned int nBlockPos,
         bool fReadTransactions, bool fCheckHeader)
 {
+    MeasureTime readFromDisk;
     SetNull();
 
     // Open history file to read
+    MeasureTime openFile;
     CAutoFile filein = CAutoFile(OpenBlockFile(nFile, nBlockPos, "rb"),
             SER_DISK, CLIENT_VERSION);
     if (!filein)
         return error("CBlock::ReadFromDisk() : OpenBlockFile failed");
     if (!fReadTransactions)
         filein.nType |= SER_BLOCKHEADERONLY;
+    openFile.mEnd.stamp();
 
     // Read block
+    MeasureTime readBlock;
     try {
         filein >> *this;
     } catch (std::exception &e)
@@ -1379,17 +1383,36 @@ bool CBlock::ReadFromDisk(unsigned int nFile, unsigned int nBlockPos,
         return error("%s() : deserialize or I/O error",
                 BOOST_CURRENT_FUNCTION);
     }
+    readBlock.mEnd.stamp();
 
+    MeasureTime readBlockHash;
     CTxDB txdb("r");
     if (fStoreBlockHashToDb && !txdb.ReadBlockHash(nFile, nBlockPos, blockHash))
     {
         printf("CBlock::ReadFromDisk(): can't read block hash at file = %d, block pos = %d\n", nFile, nBlockPos);
     }
+    readBlockHash.mEnd.stamp();
+
     // Check the header
+    MeasureTime checkTheHeader;
     printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
     if (fReadTransactions && IsProofOfWork()
             && (fCheckHeader && !CheckProofOfWork(GetHash(), nBits)))
         return error("CBlock::ReadFromDisk() : errors in block header");
+    checkTheHeader.mEnd.stamp();
+
+    readFromDisk.mEnd.stamp();
+    printf("TACA => Measure ReadFromDisk function, "
+       "readFromDisk = %lu, "
+       "openFile = %lu, "
+       "readBlock = %lu, "
+       "readBlockHash = %lu, "
+       "checkTheHeader = %lu\n",
+       readFromDisk.getExecutionTime(),
+       openFile.getExecutionTime(),
+       readBlock.getExecutionTime(),
+       readBlockHash.getExecutionTime(),
+       checkTheHeader.getExecutionTime());
 
     return true;
 }
@@ -3598,12 +3621,15 @@ bool CBlock::GetCoinAge(::uint64_t& nCoinAge) const
 bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos)
 {
     // Check for duplicate
+    MeasureTime checkForDuplicate;
     printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
     uint256 hash = GetHash();
     if (mapBlockIndex.count(hash))
         return error("AddToBlockIndex() : %s already exists", hash.ToString().substr(0,20).c_str());
+    checkForDuplicate.mEnd.stamp();
 
     // Construct new block index object
+    MeasureTime constructNewBlock;
     CBlockIndex* pindexNew = new CBlockIndex(nFile, nBlockPos, *this);
     if (!pindexNew)
         return error("AddToBlockIndex() : new CBlockIndex failed");
@@ -3621,26 +3647,34 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos)
         pindexNew->nBitsMA = pindexNew->IsProofOfStake()? 
                              GetProofOfWorkMA(pindexNew->pprev): 0;
     }
+    constructNewBlock.mEnd.stamp();
 
     // ppcoin: compute chain trust score
+    MeasureTime computeChainTrustScore;
     pindexNew->bnChainTrust = (pindexNew->pprev ? 
                                 pindexNew->pprev->bnChainTrust : 
                                 CBigNum(0)
                               ) + 
                               pindexNew->GetBlockTrust();
+    computeChainTrustScore.mEnd.stamp();
 
     // ppcoin: compute stake entropy bit for stake modifier
+    MeasureTime computeStakeEntropyBit;
     if (!pindexNew->SetStakeEntropyBit(GetStakeEntropyBit(pindexNew->nHeight)))
         return error("AddToBlockIndex() : SetStakeEntropyBit() failed");
+    computeStakeEntropyBit.mEnd.stamp();
 
     // ppcoin: record proof-of-stake hash value
+    MeasureTime recordPOS;
     if (pindexNew->IsProofOfStake())
     {
         if (!mapProofOfStake.count(hash))
             return error("AddToBlockIndex() : hashProofOfStake not found in map");
         pindexNew->hashProofOfStake = mapProofOfStake[hash];
     }
+    recordPOS.mEnd.stamp();
 
+    MeasureTime computeStakeModifier;
     if (!pindexBest || (pindexBest->nHeight + 1) < nMainnetNewLogicBlockNumber)
     {
         // ppcoin: compute stake modifier
@@ -3654,14 +3688,18 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos)
         if (!CheckStakeModifierCheckpoints(pindexNew->nHeight, pindexNew->nStakeModifierChecksum))
             return error("AddToBlockIndex() : Rejected by stake modifier checkpoint height=%d, modifier=0x%016" PRIx64, pindexNew->nHeight, nStakeModifier);
     }
+    computeStakeModifier.mEnd.stamp();
 
     // Add to mapBlockIndex
+    MeasureTime addToMapBlockIndex;
     map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.insert(make_pair(hash, pindexNew)).first;
     if (pindexNew->IsProofOfStake())
         setStakeSeen.insert(make_pair(pindexNew->prevoutStake, pindexNew->nStakeTime));
     pindexNew->phashBlock = &((*mi).first);
+    addToMapBlockIndex.mEnd.stamp();
 
     // Write to disk block index
+    MeasureTime writeBlockIndex;
     CTxDB txdb;
     if (!txdb.TxnBegin())
         return false;
@@ -3672,8 +3710,10 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos)
     }
     if (!txdb.TxnCommit())
         return false;
+    writeBlockIndex.mEnd.stamp();
 
     // New best
+    MeasureTime setBestChain;
     if (
         (pindexNew->bnChainTrust > bnBestChainTrust)
         || fTestNet     //<<<<<<<<<<<<<<<<<<<<<<<<<<
@@ -3688,6 +3728,7 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos)
         UpdatedTransaction(hashPrevBestCoinBase);
         hashPrevBestCoinBase = vtx[0].GetHash();
     }
+    setBestChain.mEnd.stamp();
 
 #ifdef QT_GUI
     static ::int8_t counter = 0;
@@ -3703,6 +3744,25 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos)
     //uiInterface.NotifyBlocksChanged();
     }
 #endif
+    printf("TACA => Measure AddToBlockIndex function, "
+        "checkForDuplicate = %lu, "
+        "constructNewBlock = %lu, "
+        "computeChainTrustScore = %lu, "
+        "computeStakeEntropyBit = %lu, "
+        "recordPOS = %lu, "
+        "computeStakeModifier = %lu, "
+        "addToMapBlockIndex = %lu, "
+        "writeBlockIndex = %lu, "
+        "setBestChain = %lu\n",
+        checkForDuplicate.getExecutionTime(),
+        constructNewBlock.getExecutionTime(),
+        computeChainTrustScore.getExecutionTime(),
+        computeStakeEntropyBit.getExecutionTime(),
+        recordPOS.getExecutionTime(),
+        computeStakeModifier.getExecutionTime(),
+        addToMapBlockIndex.getExecutionTime(),
+        writeBlockIndex.getExecutionTime(),
+        setBestChain.getExecutionTime());
     return true;
 }
 
@@ -3714,18 +3774,22 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckSig) c
     // These are checks that are independent of context
     // that can be verified before saving an orphan block.
 
+    MeasureTime checkBlock;
     set<uint256> 
         uniqueTx; // tx hashes
     unsigned int 
         nSigOps = 0; // total sigops
 
     // Size limits
+    MeasureTime checkSizeLimit;
     if (vtx.empty() || vtx.size() > GetMaxSize(MAX_BLOCK_SIZE) || ::GetSerializeSize(*this, SER_NETWORK, PROTOCOL_VERSION) > GetMaxSize(MAX_BLOCK_SIZE))
         return DoS(100, error("CheckBlock () : size limits failed"));
+    checkSizeLimit.mEnd.stamp();
 
     bool fProofOfStake = IsProofOfStake();
 
     // First transaction must be coinbase, the rest must not be
+    MeasureTime checkFirstTransaction;
     if (!vtx[0].IsCoinBase())
         return DoS(100, error("CheckBlock () : first tx is not coinbase"));
 
@@ -3799,9 +3863,11 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckSig) c
         if (GetBlockTime() < PastDrift((::int64_t)vtx[0].nTime))
             return DoS(50, error("CheckBlock () : coinbase timestamp is too late"));
     }
+    checkFirstTransaction.mEnd.stamp();
 
     // Iterate all transactions starting from second for proof-of-stake block 
     //    or first for proof-of-work block
+    MeasureTime checkOtherTransaction;
     for (unsigned int i = (fProofOfStake ? 2 : 1); i < vtx.size(); ++i)
     {
         const CTransaction& tx = vtx[i];
@@ -3837,10 +3903,26 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckSig) c
     // Reject block if validation would consume too much resources.
     if (nSigOps > GetMaxSize(MAX_BLOCK_SIGOPS))
         return DoS(100, error("CheckBlock () : out-of-bounds SigOpCount"));
+    checkOtherTransaction.mEnd.stamp();
 
     // Check merkle root
+    MeasureTime checkMerkleRoot;
     if (fCheckMerkleRoot && hashMerkleRoot != BuildMerkleTree())
         return DoS(100, error("CheckBlock () : hashMerkleRoot mismatch"));
+    checkMerkleRoot.mEnd.stamp();
+    checkBlock.mEnd.stamp();
+
+    printf("TACA => Measure CheckBlock function, "
+        "checkBlock = %lu, "
+        "checkSizeLimit = %lu, "
+        "checkFirstTransaction = %lu, "
+        "checkOtherTransaction = %lu, "
+        "checkMerkleRoot = %lu\n",
+        checkBlock.getExecutionTime(),
+        checkSizeLimit.getExecutionTime(),
+        checkFirstTransaction.getExecutionTime(),
+        checkOtherTransaction.getExecutionTime(),
+        checkMerkleRoot.getExecutionTime());
 
     return true;
 }
@@ -3848,19 +3930,24 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckSig) c
 bool CBlock::AcceptBlock()
 {
     // Check for duplicate
+    MeasureTime checkForDuplicate;
     printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
     uint256 hash = GetHash();
     if (mapBlockIndex.count(hash))
         return error("AcceptBlock () : block already in mapBlockIndex");
+    checkForDuplicate.mEnd.stamp();
 
     // Get prev block index
+    MeasureTime getPrevBlockIndex;
     map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashPrevBlock);
     if (mi == mapBlockIndex.end())
         return DoS(10, error("AcceptBlock () : prev block not found"));
     CBlockIndex* pindexPrev = (*mi).second;
     int nHeight = pindexPrev->nHeight+1;
+    getPrevBlockIndex.mEnd.stamp();
 
     // Since hardfork block, new blocks don't accept transactions with version 1 anymore
+    MeasureTime checkVersion1Transaction;
     if (nHeight >= nMainnetNewLogicBlockNumber)
     {
         bool fProofOfStake = IsProofOfStake();
@@ -3879,13 +3966,18 @@ bool CBlock::AcceptBlock()
                 return DoS(vtx[i].nDoS, error("AcceptBlock () : Not accept transaction with version 1"));
         }
     }
+    checkVersion1Transaction.mEnd.stamp();
 
     // Check proof-of-work or proof-of-stake
+    MeasureTime checkPOWorPOS;
     if (nBits != GetNextTargetRequired(pindexPrev, IsProofOfStake()))
         return DoS(100, error("AcceptBlock () : incorrect %s", IsProofOfWork() ? "proof-of-work" : "proof-of-stake"));
+    checkPOWorPOS.mEnd.stamp();
 
+    MeasureTime redundantCode;
     ::int64_t 
         nMedianTimePast = pindexPrev->GetMedianTimePast();
+    redundantCode.mEnd.stamp();
 //    int 
 //      //nMaxOffset = 12 * nSecondsPerHour; // 12 hours
 //        nMaxOffset = 7 * nSecondsPerDay; // One week (test)
@@ -3894,12 +3986,14 @@ bool CBlock::AcceptBlock()
 //        nMaxOffset = 7 * 7 * nSecondsPerDay; // 7 weeks on testNet
 
 // Check timestamp against prev
+    MeasureTime checkTimestampAgainstPrev;
     if (
         GetBlockTime() <= pindexPrev->GetMedianTimePast()
         ||
         FutureDrift(GetBlockTime()) < pindexPrev->GetBlockTime()
        )
         return error("AcceptBlock () : block's timestamp is too early");
+    checkTimestampAgainstPrev.mEnd.stamp();
 /******* removed since it does't exist in <=0.4.4 code.  Thanks again, Joe ;>
     if (
         (pindexPrev->nHeight > 1) && 
@@ -3908,15 +4002,20 @@ bool CBlock::AcceptBlock()
         return error("AcceptBlock () : block's timestamp is too far in the future");
 *******/
     // Check that all transactions are finalized
+    MeasureTime checkAllTransactionFinalized;
     BOOST_FOREACH(const CTransaction& tx, vtx)
         if (!tx.IsFinal(nHeight, GetBlockTime()))
             return DoS(10, error("AcceptBlock () : contains a non-final transaction"));
+    checkAllTransactionFinalized.mEnd.stamp();
 
     // Check that the block chain matches the known block chain up to a checkpoint
+    MeasureTime checkBlockchainMatchCheckpoint;
     if (!Checkpoints::CheckHardened(nHeight, hash))
         return DoS(100, error("AcceptBlock () : rejected by hardened checkpoint lock-in at %d", nHeight));
+    checkBlockchainMatchCheckpoint.mEnd.stamp();
 
     // Enforce rule that the coinbase starts with serialized block height
+    MeasureTime enforceCbStartsWithSerBlockHeight;
     CScript expect = CScript() << nHeight;
     if (
         ( (!fUseOld044Rules) && ( vtx[0].vin[0].scriptSig.size() < expect.size() ) )
@@ -3924,20 +4023,30 @@ bool CBlock::AcceptBlock()
         !std::equal(expect.begin(), expect.end(), vtx[0].vin[0].scriptSig.begin())
        )
         return DoS(100, error("AcceptBlock () : block height mismatch in coinbase"));
+    enforceCbStartsWithSerBlockHeight.mEnd.stamp();
 
     // Write block to history file
+    MeasureTime checkDiskSpace;
     if (!CheckDiskSpace(::GetSerializeSize(*this, SER_DISK, CLIENT_VERSION)))
         return error("AcceptBlock () : out of disk space");
+    checkDiskSpace.mEnd.stamp();
+
+    MeasureTime writeToDisk;
     unsigned int nFile = -1;
     unsigned int nBlockPos = 0;
     if (!WriteToDisk(nFile, nBlockPos))
         return error("AcceptBlock () : WriteToDisk failed");
+    writeToDisk.mEnd.stamp();
+
+    MeasureTime addToBlockIndex;
     if (!AddToBlockIndex(nFile, nBlockPos))
         return error("AcceptBlock () : AddToBlockIndex failed");
+    addToBlockIndex.mEnd.stamp();
 
     // here would be a good place to check for new logic
 
     // Relay inventory, but don't relay old inventory during initial block download
+    MeasureTime relayInventory;
     int nBlockEstimate = Checkpoints::GetTotalBlocksEstimate();
     if (hashBestChain == hash)
     {{
@@ -3951,12 +4060,44 @@ bool CBlock::AcceptBlock()
                )                            // does 2000 blocks define IBD? 24 hours + a little
                 pnode->PushInventory(CInv(MSG_BLOCK, hash));
     }}
+    relayInventory.mEnd.stamp();
 
     // ppcoin: check pending sync-checkpoint
+    MeasureTime checkPendingSyncCheckPoint;
     if (nBestHeight < nMainnetNewLogicBlockNumber)
     {
         Checkpoints::AcceptPendingSyncCheckpoint();
     }
+    checkPendingSyncCheckPoint.mEnd.stamp();
+
+    printf("TACA => Measure AcceptBlock function, "
+        "checkForDuplicate = %lu, "
+        "getPrevBlockIndex = %lu, "
+        "checkVersion1Transaction = %lu, "
+        "checkPOWorPOS = %lu, "
+        "redundantCode = %lu, "
+        "checkTimestampAgainstPrev = %lu, "
+        "checkAllTransactionFinalized = %lu, "
+        "checkBlockchainMatchCheckpoint = %lu, "
+        "enforceCbStartsWithSerBlockHeight = %lu, "
+        "checkDiskSpace = %lu, writeToDisk = %lu, "
+        "AddToBlockIndex = %lu, "
+        "relayInventory = %lu, "
+        "checkPendingSyncCheckPoint = %lu\n",
+        checkForDuplicate.getExecutionTime(),
+        getPrevBlockIndex.getExecutionTime(),
+        checkVersion1Transaction.getExecutionTime(),
+        checkPOWorPOS.getExecutionTime(),
+        redundantCode.getExecutionTime(),
+        checkTimestampAgainstPrev.getExecutionTime(),
+        checkAllTransactionFinalized.getExecutionTime(),
+        checkBlockchainMatchCheckpoint.getExecutionTime(),
+        enforceCbStartsWithSerBlockHeight.getExecutionTime(),
+        checkDiskSpace.getExecutionTime(),
+        writeToDisk.getExecutionTime(),
+        addToBlockIndex.getExecutionTime(),
+        relayInventory.getExecutionTime(),
+        checkPendingSyncCheckPoint.getExecutionTime());
 
     return true;
 }
@@ -4141,17 +4282,21 @@ bool CBlockIndex::IsSuperMajority(int minVersion, const CBlockIndex* pstart, uns
 
 bool ProcessBlock(CNode* pfrom, CBlock* pblock)
 {
+    MeasureTime processBlock;
     // Check for duplicate
+    MeasureTime checkDuplicate;
     printf("TACA ===> %s(%d)-<%s>\n",__FILE__, __LINE__, __FUNCTION__);
     uint256 hash = pblock->GetHash();
     if (mapBlockIndex.count(hash))
         return error("ProcessBlock () : already have block %d %s", mapBlockIndex[hash]->nHeight, hash.ToString().substr(0,20).c_str());
     if (mapOrphanBlocks.count(hash))
         return error("ProcessBlock () : already have block (orphan) %s", hash.ToString().substr(0,20).c_str());
+    checkDuplicate.mEnd.stamp();
 
     // ppcoin: check proof-of-stake
     // Limited duplicity on stake: prevents block flood attack
     // Duplicate stake allowed only when there is orphan child block
+    MeasureTime checkPOS;
     if (
         pblock->IsProofOfStake() && 
         setStakeSeen.count(pblock->GetProofOfStake()) && 
@@ -4163,8 +4308,10 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
                      pblock->GetProofOfStake().second, 
                      hash.ToString().c_str()
                     );
+    checkPOS.mEnd.stamp();
 
     // Preliminary checks
+    MeasureTime prelCheck;
     if (
         !pblock->CheckBlock(
                             true, 
@@ -4173,8 +4320,10 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
                            )
        )
         return error("ProcessBlock () : CheckBlock FAILED");
+    prelCheck.mEnd.stamp();
 
     // ppcoin: verify hash target and signature of coinstake tx
+    MeasureTime verHashAndSig;
     if (pblock->IsProofOfStake())
     {
         uint256 hashProofOfStake = 0, targetProofOfStake = 0;
@@ -4192,7 +4341,9 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
         if (!mapProofOfStake.count(hash)) // add to mapProofOfStake
             mapProofOfStake.insert(make_pair(hash, hashProofOfStake));
     }
+    verHashAndSig.mEnd.stamp();
 
+    MeasureTime checkPoint;
     CBlockIndex* pcheckpoint;
     if (nBestHeight >= nMainnetNewLogicBlockNumber)
     {
@@ -4255,12 +4406,16 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
             return error("ProcessBlock () : block with too little %s", pblock->IsProofOfStake()? "proof-of-stake" : "proof-of-work");
         }
     }
+    checkPoint.mEnd.stamp();
 
     // ppcoin: ask for pending sync-checkpoint if any
+    MeasureTime askForCheckPoint;
     if (!IsInitialBlockDownload() && nBestHeight < nMainnetNewLogicBlockNumber)
         Checkpoints::AskForPendingSyncCheckpoint(pfrom);
+    askForCheckPoint.mEnd.stamp();
 
     // If don't already have its previous block, shunt it off to holding area until we get it
+    MeasureTime checkOrphanBlock;
     if (!mapBlockIndex.count(pblock->hashPrevBlock))
     {
         printf("ProcessBlock: ORPHAN BLOCK, prev=%s\n", pblock->hashPrevBlock.ToString().substr(0,20).c_str());
@@ -4292,12 +4447,16 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
         }
         return true;
     }
+    checkOrphanBlock.mEnd.stamp();
 
     // Store to disk
+    MeasureTime storeToDisk;
     if (!pblock->AcceptBlock())
         return error("ProcessBlock () : AcceptBlock FAILED");
+    storeToDisk.mEnd.stamp();
 
     // Recursively process any orphan blocks that depended on this one
+    MeasureTime processOrphanBlock;
     vector<uint256> 
         vWorkQueue;
     vWorkQueue.push_back(hash);
@@ -4324,15 +4483,43 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
         }
         mapOrphanBlocksByPrev.erase(hashPrev);
     }
+    processOrphanBlock.mEnd.stamp();
 
     printf("ProcessBlock: ACCEPTED %s BLOCK\n", pblock->IsProofOfStake()?"POS":"POW");
 
     // ppcoin: if responsible for sync-checkpoint send it
+    MeasureTime sendCheckPoint;
     if (nBestHeight < nMainnetNewLogicBlockNumber && pfrom && !CSyncCheckpoint::strMasterPrivKey.empty())
         Checkpoints::SendSyncCheckpoint(Checkpoints::AutoSelectSyncCheckpoint());
+    sendCheckPoint.mEnd.stamp();
 #ifdef QT_GUI
     //uiInterface.NotifyBlocksChanged();
 #endif
+    processBlock.mEnd.stamp();
+    printf("TACA => Measure ProcessBlock function, "
+        "processBlock = %lu, "
+        "checkDuplicate= %lu, "
+        "checkPOS= %lu, "
+        "prelCheck= %lu, "
+        "verHashAndSig= %lu\n",
+        processBlock.getExecutionTime(),
+        checkDuplicate.getExecutionTime(),
+        checkPOS.getExecutionTime(),
+        prelCheck.getExecutionTime(),
+        verHashAndSig.getExecutionTime());
+    printf("TACA => Measure ProcessBlock function, "
+        "checkPoint= %lu, "
+        "askForCheckPoint= %lu, "
+        "checkOrphanBlock= %lu, "
+        "storeToDisk= %lu, "
+        "processOrphanBlock= %lu, "
+        "sendCheckPoint = %lu\n",
+        checkPoint.getExecutionTime(),
+        askForCheckPoint.getExecutionTime(),
+        checkOrphanBlock.getExecutionTime(),
+        storeToDisk.getExecutionTime(),
+        processOrphanBlock.getExecutionTime(),
+        sendCheckPoint.getExecutionTime());
 
     return true;
 }
@@ -4621,19 +4808,46 @@ FILE* AppendBlockFile(unsigned int& nFileRet)
     nFileRet = 0;
     while (true)
     {
+        MeasureTime openBlockFile;
         FILE* file = OpenBlockFile(nCurrentBlockFile, 0, "ab");
+        openBlockFile.mEnd.stamp();
         if (!file)
             return NULL;
+        MeasureTime seekFile;
         if (fseek(file, 0, SEEK_END) != 0)
             return NULL;
+        seekFile.mEnd.stamp();
         // FAT32 file size max 4GB, fseek and ftell max 2GB, so we must stay under 2GB
+        MeasureTime tellFile;
         if (ftell(file) < (long)(0x7F000000 - MAX_SIZE))
         {
             nFileRet = nCurrentBlockFile;
+            tellFile.mEnd.stamp();
+            printf("TACA => Measure AppendBlockFile function 1, "
+                "openBlockFile = %lu, "
+                "seekFile = %lu, "
+                "tellFile = %lu\n",
+                openBlockFile.getExecutionTime(),
+                seekFile.getExecutionTime(),
+                tellFile.getExecutionTime());
             return file;
         }
+        tellFile.mEnd.stamp();
+
+        MeasureTime closeFile;
         fclose(file);
         nCurrentBlockFile++;
+        closeFile.mEnd.stamp();
+
+        printf("TACA => Measure AppendBlockFile function 2, "
+            "openBlockFile = %lu, "
+            "seekFile = %lu, "
+            "tellFile = %lu, "
+            "closeFile = %lu\n",
+            openBlockFile.getExecutionTime(),
+            seekFile.getExecutionTime(),
+            tellFile.getExecutionTime(),
+            closeFile.getExecutionTime());
     }
 }
 

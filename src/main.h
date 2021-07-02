@@ -1456,26 +1456,44 @@ public:
     bool WriteToDisk(unsigned int& nFileRet, unsigned int& nBlockPosRet)
     {
         // Open history file to append
+        MeasureTime openHistoryFile;
         CAutoFile fileout = CAutoFile(AppendBlockFile(nFileRet), SER_DISK, CLIENT_VERSION);
         if (!fileout)
             return error("CBlock::WriteToDisk() : AppendBlockFile failed");
+        openHistoryFile.mEnd.stamp();
 
         // Write index header
+        MeasureTime writeIndexHeader;
         unsigned int nSize = fileout.GetSerializeSize(*this);
         fileout << FLATDATA(pchMessageStart) << nSize;
+        writeIndexHeader.mEnd.stamp();
 
         // Write block
+        MeasureTime writeBlock;
         long fileOutPos = ftell(fileout);
         if (fileOutPos < 0)
             return error("CBlock::WriteToDisk() : ftell failed");
         nBlockPosRet = fileOutPos;
         fileout << *this;
+        writeBlock.mEnd.stamp();
 
         // Flush stdio buffers and commit to disk before returning
+        MeasureTime flushAndCommitToDisk;
         fflush(fileout);
         if (!IsInitialBlockDownload() || (nBestHeight+1) % 500 == 0)
             FileCommit(fileout);
 
+        flushAndCommitToDisk.mEnd.stamp();
+
+        printf("TACA => Measure WriteToDisk function, "
+           "openHistoryFile = %lu, "
+           "writeIndexHeader = %lu, "
+           "writeBlock = %lu, "
+           "flushAndCommitToDisk = %lu\n",
+            openHistoryFile.getExecutionTime(),
+            writeIndexHeader.getExecutionTime(),
+            writeBlock.getExecutionTime(),
+            flushAndCommitToDisk.getExecutionTime());
         return true;
     }
 
