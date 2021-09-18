@@ -793,7 +793,7 @@ bool CTxDB::LoadBlockIndex()
     {
         LOCK(cs_main);
 
-        vector<pair<int, CBlockIndex *>> vSortedByHeight;
+        vector< pair< int, CBlockIndex*> > vSortedByHeight;
 
         vSortedByHeight.reserve(mapBlockIndex.size());
         //vSortedByHeight.resize( mapBlockIndex.size() );
