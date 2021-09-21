@@ -3412,7 +3412,8 @@ bool SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew)
 
         // Not allow to reorg back to blocks which before last checkpoint
         CBlockIndex* pcheckpoint = Checkpoints::GetLastCheckpoint(mapBlockIndex);
-        if (chainActive.Tip()->nHeight - vDisconnect.size() < pcheckpoint->nHeight)
+        if ((vDisconnect.size() > 0)
+                && (chainActive.Tip()->nHeight - vDisconnect.size() < pcheckpoint->nHeight))
         {
             return error(
                     "SetBestChain() : Not allow to reorg back to blocks before last checkpoint, current best height = %d, last checkpoint height = %d, number of reorg blocks = %d",
