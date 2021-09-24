@@ -3377,7 +3377,7 @@ void static InvalidBlockFound(CTxDB& txdb, CBlockIndex *pindex) {
     }
 }
 
-bool static WriteChainState() {
+bool static WriteChainState(CTxDB& txdb, CBlockIndex *pindexNew) {
     if (!txdb.WriteHashBestChain(pindexNew->GetBlockHash()))
         return error("SetBestChain() : WriteHashBestChain failed");
 
@@ -3570,7 +3570,7 @@ bool SetBestChain(CValidationState &state, CTxDB& txdb, CBlockIndex* pindexNew)
         }
 
 
-        if (!WriteChainState())
+        if (!WriteChainState(txdb, pindexNew))
                 return false;
         // At this point, all changes have been done to the database.
         // Proceed by updating the memory structures.
