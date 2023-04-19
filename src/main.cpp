@@ -2342,10 +2342,23 @@ static unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, ::i
     bnPrevTarget /= nNominalTimespan;
 
     // Calculate maximum target of all blocks, it corresponds to 1/3 highest difficulty (or 3 minimum ease)
+    ::uint32_t oneMinuteNBits = bnPrevTarget.GetCompact();
+    uint256 oneMinuteTarget = CBigNum().SetCompact( oneMinuteNBits ).getuint256();
+    (void)printf(
+        "TACA ===> CalculateNextWorkRequired,  oneMinuteNBits = %u (%x), oneMinuteTarget = %s\n",
+        oneMinuteNBits, oneMinuteNBits,
+        oneMinuteTarget.ToString().c_str());
+
+    // Calculate maximum target of all blocks, it corresponds to 1/3 highest difficulty (or 3 minimum ease)
     uint256 bnMaximum = CBigNum().SetCompact(nMinEase).getuint256();
     CBigNum bnMaximumTarget;
     bnMaximumTarget.setuint256(bnMaximum);
     bnMaximumTarget *= 3;
+
+    (void)printf(
+        "TACA ===> CalculateNextWorkRequired,  Minimum nBits = %u (%x), Minimum target = %s\n",
+        nMinEase, nMinEase,
+        bnMaximum.ToString().c_str());
 
     // Compare 1/3 highest difficulty with 0.4.9 min difficulty (genesis block difficulty), choose the higher
     if (bnMaximumTarget > bnProofOfWorkLimit)
@@ -2361,8 +2374,14 @@ static unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, ::i
                  , CBigNum( bnNewTarget ).getuint256().ToString().substr(0,16).c_str()
                 );
 
-    // Update minimum ease for next target calculation
     ::uint32_t nNewEase = bnNewTarget.GetCompact();
+    uint256 bnNewTargetUint256 = CBigNum().SetCompact(nNewEase).getuint256();
+    (void)printf(
+        "TACA ===> CalculateNextWorkRequired,  new nBits = %u (%x), new target = %s\n",
+        nNewEase, nNewEase,
+        bnNewTargetUint256.ToString().c_str());
+
+    // Update minimum ease for next target calculation
     if (nMinEase > nNewEase)
     {
         nMinEase = nNewEase;

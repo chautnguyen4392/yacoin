@@ -36,6 +36,38 @@ using std::vector;
 static const char DB_ADDRESSINDEX = 'a';
 static const char DB_ADDRESSUNSPENTINDEX = 'u';
 
+double TempGetDifficulty(const CBlockIndex* blockindex)
+{
+    // Floating point number that is a multiple of the minimum difficulty,
+    // minimum difficulty = 1.0.
+    if (blockindex == NULL)
+    {
+        if (chainActive.Tip() == NULL)
+            return 1.0;
+        else
+            blockindex = GetLastBlockIndex(chainActive.Tip(), false);
+    }
+
+    int nShift = (blockindex->nBits >> 24) & 0xff;  // mask to top 8 bits
+
+    double dDiff =
+        (double)0x0000ffff / (double)(blockindex->nBits & 0x00ffffff);
+                                                    // 64k/(mask lower 24 bits)
+                                                    // can be <1, >1
+    while (nShift < 29)     // can be 0 to 256
+    {
+        dDiff *= 256.0;     // sort of << 8
+        nShift++;
+    }                       // nShift is >=30 and <=255
+    while (nShift > 29)
+    {
+        dDiff /= 256.0;     // sort of >>8
+        nShift--;
+    }
+
+    return dDiff;
+}
+
 // CDB subclasses are created and destroyed VERY OFTEN. That's why
 // we shouldn't treat this as a free operations.
 CTxDB::CTxDB(const char *pszMode, bool fWipe) :
@@ -744,6 +776,14 @@ bool CTxDB::LoadBlockIndex()
         if (tmpBlockIndex->nHeight >= bestEpochIntervalHeight &&
             ((tmpBlockIndex->nHeight % nEpochInterval == 0) || (tmpBlockIndex->nHeight == nMainnetNewLogicBlockNumber)))
         {
+            uint256 nTarget = CBigNum().SetCompact( tmpBlockIndex->nBits ).getuint256();
+            printf(
+                "TACA ===> CTxDB::LoadBlockIndex(), tmpBlockIndex->nHeight = "
+                "%d, tmpBlockIndex->nBits = %u (%x), target = %s, difficulty = "
+                "%f\n",
+                tmpBlockIndex->nHeight, tmpBlockIndex->nBits,
+                tmpBlockIndex->nBits, nTarget.ToString().c_str(),
+                TempGetDifficulty(tmpBlockIndex));
             bestEpochIntervalHeight = tmpBlockIndex->nHeight;
             bestEpochIntervalHash = tmpBlockIndex->blockHash;
         }
@@ -755,6 +795,15 @@ bool CTxDB::LoadBlockIndex()
         }
         tmpBlockIndex = tmpBlockIndex->pnext;
     }
+
+    // Initial target
+    CBigNum bnProofOfWorkLimit(~uint256(0) >> 20);
+    ::uint32_t initialNBits = bnProofOfWorkLimit.GetCompact();
+    uint256 initialTarget = CBigNum().SetCompact( initialNBits ).getuint256();
+    printf(
+        "TACA ===> CTxDB::LoadBlockIndex(), Initial nBits = %u (%x), initial target = %s\n", initialNBits, initialNBits,
+        initialTarget.ToString().c_str());
+
     // Calculate maximum target of all blocks, it corresponds to 1/3 highest difficulty (or 3 minimum ease)
     uint256 bnMaximum = CBigNum().SetCompact(nMinEase).getuint256();
     CBigNum bnMaximumTarget;
@@ -762,10 +811,9 @@ bool CTxDB::LoadBlockIndex()
     bnMaximumTarget *= 3;
 
     (void)printf(
-                 "Minimum difficulty target %s\n"
-                 ""
-                 , CBigNum( bnMaximumTarget ).getuint256().ToString().substr(0,16).c_str()
-                );
+        "TACA ===> CTxDB::LoadBlockIndex(),  Minimum nBits = %u (%x), Minimum target = %s\n",
+        nMinEase, nMinEase,
+        bnMaximumTarget.getuint256().ToString().c_str());
 
     if (fReindexOnlyHeaderSync)
     {
