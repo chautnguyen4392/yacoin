@@ -5413,6 +5413,11 @@ bool SendMessages(CNode *pto, bool fSendTrickle)
         if (pto->nVersion == 0)
             return true;
 
+        printf(
+            "TACA ===> SendMessages, pto->addrName = %s, pto->nLastSend = %ld, "
+            "GetTime() = %ld, nPingInterval = %ld, pto->vSend.empty() = %d\n",
+            pto->addrName.c_str(), pto->nLastSend, GetTime(), nPingInterval,
+            pto->vSend.empty());
         // Keep-alive ping. We send a nonce of zero because we don't use it anywhere
         // right now.
         if (pto->nLastSend && ((GetTime() - pto->nLastSend) > nPingInterval) &&
@@ -5420,6 +5425,7 @@ bool SendMessages(CNode *pto, bool fSendTrickle)
         {
             ::uint64_t nonce = 0;
 
+            printf("TACA ===> SendMessages, Push ping message to pto->addrName = %s\n", pto->addrName.c_str());
             if (pto->nVersion > BIP0031_VERSION)
                 pto->PushMessage("ping", nonce);
             else
