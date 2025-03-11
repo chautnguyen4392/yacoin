@@ -15,7 +15,7 @@
 #endif
 
 #ifndef BITCOIN_TXDB_H
- #include "txdb-leveldb.h"
+ #include "txdb.h"
 #endif
  
 #ifndef BITCOIN_INIT_H
@@ -23,6 +23,9 @@
 #endif
 #include "streams.h"
 #include "net_processing.h"
+#include "consensus/validation.h"
+#include "policy/policy.h"
+#include "validation.h"
 
 using namespace boost;
 using namespace boost::assign;
@@ -399,26 +402,20 @@ Value signrawtransaction(const Array& params, bool fHelp)
 
     // Fetch previous transactions (inputs):
     map<COutPoint, CScript> mapPrevOut;
-    for (unsigned int i = 0; i < mergedTx.vin.size(); i++)
+    CCoinsView viewDummy;
+    CCoinsViewCache view(&viewDummy);
     {
-        CTransaction tempTx;
-        MapPrevTx mapPrevTx;
-        CTxDB txdb("r");
-        map<uint256, CTxIndex> unused;
-        bool fInvalid;
+        LOCK(mempool.cs);
+        CCoinsViewCache &viewChain = *pcoinsTip;
+        CCoinsViewMemPool viewMempool(&viewChain, mempool);
+        view.SetBackend(viewMempool); // temporarily switch cache backend to db+mempool view
 
-        // FetchInputs aborts on failure, so we go one at a time.
-        CValidationState state;
-        tempTx.vin.push_back(mergedTx.vin[i]);
-        tempTx.FetchInputs(state, txdb, unused, false, false, mapPrevTx, fInvalid);
-
-        // Copy results into mapPrevOut:
-        BOOST_FOREACH(const CTxIn& txin, tempTx.vin)
-        {
-            const uint256& prevHash = txin.prevout.COutPointGetHash();
-            if (mapPrevTx.count(prevHash) && mapPrevTx[prevHash].second.vout.size()>txin.prevout.COutPointGet_n())
-                mapPrevOut[txin.prevout] = mapPrevTx[prevHash].second.vout[txin.prevout.COutPointGet_n()].scriptPubKey;
+        for (const CTxIn& txin : mergedTx.vin) {
+            const Coin& existingCoin = view.AccessCoin(txin.prevout); // Load entries from viewChain into view; can fail.
+            mapPrevOut[txin.prevout] = existingCoin.out.scriptPubKey;
         }
+
+        view.SetBackend(viewDummy); // switch back to avoid locking mempool for too long
     }
 
     bool fGivenKeys = false;
@@ -427,7 +424,7 @@ Value signrawtransaction(const Array& params, bool fHelp)
     {
         fGivenKeys = true;
         Array keys = params[2].get_array();
-        BOOST_FOREACH(Value k, keys)
+        for(Value k : keys)
         {
             CBitcoinSecret vchSecret;
             bool fGood = vchSecret.SetString(k.get_str());
@@ -447,7 +444,7 @@ Value signrawtransaction(const Array& params, bool fHelp)
     if (params.size() > 1 && params[1].type() != null_type)
     {
         Array prevTxs = params[1].get_array();
-        BOOST_FOREACH(Value& p, prevTxs)
+        for(Value& p : prevTxs)
         {
             if (p.type() != obj_type)
                 throw JSONRPCError(RPC_DESERIALIZATION_ERROR, "expected object with {\"txid'\",\"vout\",\"scriptPubKey\"}");
@@ -544,11 +541,11 @@ Value signrawtransaction(const Array& params, bool fHelp)
             SignSignature(keystore, prevPubKey, mergedTx, i, nHashType);
 
         // ... and merge in other signatures:
-        BOOST_FOREACH(const CTransaction& txv, txVariants)
+        for(const CTransaction& txv : txVariants)
         {
             txin.scriptSig = CombineSignatures(prevPubKey, mergedTx, i, txin.scriptSig, txv.vin[i].scriptSig);
         }
-        if (!VerifyScript(txin.scriptSig, prevPubKey, mergedTx, i, STRICT_FLAGS, 0))
+        if (!VerifyScript(txin.scriptSig, prevPubKey, mergedTx, i, STANDARD_SCRIPT_VERIFY_FLAGS, 0))
             fComplete = false;
     }
 
@@ -573,7 +570,7 @@ Value sendrawtransaction(const Array& params, bool fHelp)
     // parse hex string from parameter
     vector<unsigned char> txData(ParseHex(params[0].get_str()));
     CDataStream ssData(txData, SER_NETWORK, PROTOCOL_VERSION);
-    CTransaction tx;
+    CTransactionRef tx;
 
     // deserialize binary data stream
     try {
@@ -582,7 +579,7 @@ Value sendrawtransaction(const Array& params, bool fHelp)
     catch (std::exception &e) {
         throw JSONRPCError(RPC_DESERIALIZATION_ERROR, "TX decode failed");
     }
-    uint256 hashTx = tx.GetHash();
+    uint256 hashTx = tx->GetHash();
 
     // See if the transaction is already in a block
     // or in the memory pool:
@@ -598,14 +595,14 @@ Value sendrawtransaction(const Array& params, bool fHelp)
     else
     {
         // push to local node
-        CTxDB txdb("r");
+        bool fMissingInputs = false;
         CValidationState state;
-        if (!tx.AcceptToMemoryPool(state, txdb))
+        if (!AcceptToMemoryPool(mempool, state, tx, &fMissingInputs))
             throw JSONRPCError(RPC_DESERIALIZATION_ERROR, "TX rejected");
 
-        SyncWithWallets(tx, NULL, true);
+        SyncWithWallets(*tx, NULL, true);
     }
-    RelayTransaction(tx, g_connman.get());
+    RelayTransaction(*tx, g_connman.get());
 
     return hashTx.GetHex();
 }

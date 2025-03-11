@@ -19,8 +19,10 @@
 #include "wallet.h"
 #include "walletmodel.h"
 #include "streams.h"
-#include "txdb-leveldb.h"
+#include "txdb.h"
 #include "net_processing.h"
+#include "validation.h"
+#include "consensus/validation.h"
 
 MultisigDialog::MultisigDialog(QWidget *parent) : QWidget(parent), ui(new Ui::MultisigDialog), model(0)
 {
@@ -424,24 +426,20 @@ void MultisigDialog::on_signTransactionButton_clicked()
 
     // Fetch previous transactions (inputs)
     std::map<COutPoint, CScript> mapPrevOut;
-    for(unsigned int i = 0; i < mergedTx.vin.size(); i++)
+    CCoinsView viewDummy;
+    CCoinsViewCache view(&viewDummy);
     {
-        CTransaction tempTx;
-        MapPrevTx mapPrevTx;
-        CTxDB txdb("r");
-        std::map<uint256, CTxIndex> unused;
-        bool fInvalid;
+        LOCK(mempool.cs);
+        CCoinsViewCache &viewChain = *pcoinsTip;
+        CCoinsViewMemPool viewMempool(&viewChain, mempool);
+        view.SetBackend(viewMempool); // temporarily switch cache backend to db+mempool view
 
-        tempTx.vin.push_back(mergedTx.vin[i]);
-        CValidationState state;
-        tempTx.FetchInputs(state, txdb, unused, false, false, mapPrevTx, fInvalid);
-
-        BOOST_FOREACH(const CTxIn& txin, tempTx.vin)
-        {
-            const uint256& prevHash = txin.prevout.COutPointGetHash();
-            if(mapPrevTx.count(prevHash) && mapPrevTx[prevHash].second.vout.size() > txin.prevout.COutPointGet_n())
-                mapPrevOut[txin.prevout] = mapPrevTx[prevHash].second.vout[txin.prevout.COutPointGet_n()].scriptPubKey;
+        for (const CTxIn& txin : mergedTx.vin) {
+            const Coin& existingCoin = view.AccessCoin(txin.prevout); // Load entries from viewChain into view; can fail.
+            mapPrevOut[txin.prevout] = existingCoin.out.scriptPubKey;
         }
+
+        view.SetBackend(viewDummy); // switch back to avoid locking mempool for too long
     }
 
     // Add the redeem scripts to the wallet keystore
@@ -531,7 +529,7 @@ void MultisigDialog::on_sendTransactionButton_clicked()
     // Decode the raw transaction
     std::vector<unsigned char> txData(ParseHex(ui->signedTransaction->text().toStdString()));
     CDataStream ssData(txData, SER_NETWORK, PROTOCOL_VERSION);
-    CTransaction tx;
+    CTransactionRef tx;
     try
     {
         ssData >> tx;
@@ -541,7 +539,7 @@ void MultisigDialog::on_sendTransactionButton_clicked()
         (void)e;
         return;
     }
-    uint256 txHash = tx.GetHash();
+    uint256 txHash = tx->GetHash();
 
     // Check if the transaction is already in the blockchain
     CTransaction existingTx;
@@ -553,13 +551,13 @@ void MultisigDialog::on_sendTransactionButton_clicked()
     }
 
     // Send the transaction to the local node
-    CTxDB txdb("r");
+    bool fMissingInputs = false;
 	CValidationState state;
-    if(!tx.AcceptToMemoryPool(state, txdb))
-    return;
-    SyncWithWallets(tx, NULL, true);
+    if (!AcceptToMemoryPool(mempool, state, tx, &fMissingInputs))
+        return;
+    SyncWithWallets(*tx, NULL, true);
     //(CInv(MSG_TX, txHash), tx);
-    RelayTransaction(tx, g_connman.get());
+    RelayTransaction(*tx, g_connman.get());
 }
 
 MultisigInputEntry * MultisigDialog::addInput()

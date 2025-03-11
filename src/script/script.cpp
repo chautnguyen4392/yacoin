@@ -12,6 +12,8 @@
 #include "main.h"
 #include "tokens/tokens.h"
 #include "streams.h"
+#include "policy/policy.h"
+#include "validation.h"
 
 #include <boost/foreach.hpp>
 #include <boost/tuple/tuple.hpp>
@@ -352,7 +354,7 @@ bool EvalScript(
     valtype vchPushValue;
     vector<bool> vfExec;
     vector<valtype> altstack;
-    if (script.size() > 10000)
+    if (script.size() > MAX_SCRIPT_SIZE)
         return false;
     int nOpCount = 0;
 
@@ -369,7 +371,7 @@ bool EvalScript(
                 return false;
             if (vchPushValue.size() > MAX_SCRIPT_ELEMENT_SIZE)
                 return false;
-            if (opcode > OP_16 && ++nOpCount > 201)
+            if (opcode > OP_16 && ++nOpCount > MAX_OPS_PER_SCRIPT)
                 return false;
 
             if (opcode == OP_CAT ||
@@ -1068,10 +1070,10 @@ bool EvalScript(
                         return false;
 
                     int nKeysCount = CScriptNum(stacktop(-i)).getint();
-                    if (nKeysCount < 0 || nKeysCount > 20)
+                    if (nKeysCount < 0 || nKeysCount > MAX_PUBKEYS_PER_MULTISIG)
                         return false;
                     nOpCount += nKeysCount;
-                    if (nOpCount > 201)
+                    if (nOpCount > MAX_OPS_PER_SCRIPT)
                         return false;
                     int ikey = ++i;
                     i += nKeysCount;
@@ -1140,7 +1142,7 @@ bool EvalScript(
             }
 
             // Size limits
-            if (stack.size() + altstack.size() > 1000)
+            if (stack.size() + altstack.size() > MAX_STACK_SIZE)
                 return false;
         }
     }
@@ -1381,7 +1383,7 @@ bool CheckLockTime(const CTransaction& txTo, unsigned int nIn, const CScriptNum&
     // prevent this condition. Alternatively we could test all
     // inputs, but testing just this input minimizes the data
     // required to prove correct CHECKLOCKTIMEVERIFY execution.
-    if (txTo.vin[nIn].IsFinal())
+    if (CTxIn::SEQUENCE_FINAL == txTo.vin[nIn].nSequence)
         return false;
 
     return true;
@@ -1781,33 +1783,6 @@ int ScriptSigArgsExpected(txnouttype t, const std::vector<std::vector<unsigned c
     return -1;
 }
 
-bool IsStandard(const CScript& scriptPubKey, txnouttype& whichType)
-{
-    vector<valtype> vSolutions;
-    if (!Solver(scriptPubKey, whichType, vSolutions))
-        return false;
-
-    if (whichType == TX_MULTISIG)
-    {
-#ifdef _MSC_VER
-        if( vSolutions.empty() )
-            {       // one can't technically access vSolutions[ 0 ]
-            return false;
-            }
-#endif
-        unsigned char m = vSolutions.front()[0];
-        unsigned char n = vSolutions.back()[0];
-        // Support up to x-of-3 multisig txns as standard
-        if (n < 1 || n > 3)
-            return false;
-        if (m < 1 || m > n)
-            return false;
-    }
-
-    return whichType != TX_NONSTANDARD;
-}
-
-
 unsigned int HaveKeys(const vector<valtype>& pubkeys, const CKeyStore& keystore)
 {
     unsigned int nResult = 0;
@@ -2161,7 +2136,7 @@ bool SignSignature(const CKeyStore &keystore, const CScript& fromPubKey, CTransa
     }
 
     // Test solution
-    return VerifyScript(txin.scriptSig, fromPubKey, txTo, nIn, STRICT_FLAGS, 0);
+    return VerifyScript(txin.scriptSig, fromPubKey, txTo, nIn, STANDARD_SCRIPT_VERIFY_FLAGS, 0);
 }
 
 bool SignSignature(const CKeyStore &keystore, const CTransaction& txFrom, CTransaction& txTo, unsigned int nIn, int nHashType)
@@ -2320,7 +2295,7 @@ unsigned int CScript::GetSigOpCount(bool fAccurate) const
             if (fAccurate && lastOpcode >= OP_1 && lastOpcode <= OP_16)
                 n += DecodeOP_N(lastOpcode);
             else
-                n += 20;
+                n += MAX_PUBKEYS_PER_MULTISIG;
         }
         lastOpcode = opcode;
     }
@@ -2602,6 +2577,154 @@ void CScript::SetCsvP2PKH(::uint32_t nSequence, const CKeyID &keyID)
     *this << OP_CHECKSEQUENCEVERIFY << OP_DROP;
     *this  << OP_DUP << OP_HASH160 << keyID << OP_EQUALVERIFY << OP_CHECKSIG;
 }
+
+bool CScript::IsUnspendable() const
+{
+    CAmount nAmount;
+    return (size() > 0 && *begin() == OP_RETURN) || (size() > 0 && *begin() == OP_YAC_TOKEN) || (size() > MAX_SCRIPT_SIZE) || (GetTokenAmountFromScript(*this, nAmount) && nAmount == 0);
+}
+
+//!--------------------------------------------------------------------------------------------------------------------------!//
+//! These are needed because script.h and script.cpp do not have access to tokens.h and tokens.cpp functions. This is
+//! because the make file compiles them at different times. The script files are compiled with other
+//! consensus files, and token files are compiled with core files.
+
+//! Used to check if a token script contains zero tokens. Is so, it should be unspendable
+bool GetTokenAmountFromScript(const CScript& script, CAmount& nAmount)
+{
+    // Placeholder strings that will get set if you successfully get the transfer or token from the script
+    std::string address = "";
+    std::string tokenName = "";
+
+    int nType = 0;
+    bool fIsOwner = false;
+    if (!script.IsTokenScript(nType, fIsOwner)) {
+        return false;
+    }
+
+    txnouttype type = txnouttype(nType);
+
+    // Get the New Token or Transfer Token from the scriptPubKey
+    if (type == TX_NEW_TOKEN && !fIsOwner) {
+        if (AmountFromNewTokenScript(script, nAmount)) {
+            return true;
+        }
+    } else if (type == TX_TRANSFER_TOKEN) {
+        if (AmountFromTransferScript(script, nAmount)) {
+            return true;
+        }
+    } else if (type == TX_NEW_TOKEN && fIsOwner) {
+            nAmount = OWNER_TOKEN_AMOUNT;
+            return true;
+    } else if (type == TX_REISSUE_TOKEN) {
+        if (AmountFromReissueScript(script, nAmount)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool ScriptNewToken(const CScript& scriptPubKey, int& nStartingIndex)
+{
+    int nType = 0;
+    bool fIsOwner =false;
+    if (scriptPubKey.IsTokenScript(nType, fIsOwner, nStartingIndex)) {
+        return nType == TX_NEW_TOKEN && !fIsOwner;
+    }
+
+    return false;
+}
+
+bool ScriptTransferToken(const CScript& scriptPubKey, int& nStartingIndex)
+{
+    int nType = 0;
+    bool fIsOwner =false;
+    if (scriptPubKey.IsTokenScript(nType, fIsOwner, nStartingIndex)) {
+        return nType == TX_TRANSFER_TOKEN;
+    }
+
+    return false;
+}
+
+bool ScriptReissueToken(const CScript& scriptPubKey, int& nStartingIndex)
+{
+    int nType = 0;
+    bool fIsOwner =false;
+    if (scriptPubKey.IsTokenScript(nType, fIsOwner, nStartingIndex)) {
+        return nType == TX_REISSUE_TOKEN;
+    }
+
+    return false;
+}
+
+
+bool AmountFromNewTokenScript(const CScript& scriptPubKey, CAmount& nAmount)
+{
+    int nStartingIndex = 0;
+    if (!ScriptNewToken(scriptPubKey, nStartingIndex))
+        return false;
+
+    std::vector<unsigned char> vchNewToken;
+    vchNewToken.insert(vchNewToken.end(), scriptPubKey.begin() + nStartingIndex, scriptPubKey.end());
+    CDataStream ssToken(vchNewToken, SER_NETWORK, PROTOCOL_VERSION);
+
+    CNewToken tokenNew;
+    try {
+        ssToken >> tokenNew;
+    } catch(std::exception& e) {
+        std::cout << "Failed to get the token from the stream: " << e.what() << std::endl;
+        return false;
+    }
+
+    nAmount = tokenNew.nAmount;
+    return true;
+}
+
+bool AmountFromTransferScript(const CScript& scriptPubKey, CAmount& nAmount)
+{
+    int nStartingIndex = 0;
+    if (!ScriptTransferToken(scriptPubKey, nStartingIndex))
+        return false;
+
+    std::vector<unsigned char> vchToken;
+    vchToken.insert(vchToken.end(), scriptPubKey.begin() + nStartingIndex, scriptPubKey.end());
+    CDataStream ssToken(vchToken, SER_NETWORK, PROTOCOL_VERSION);
+
+    CTokenTransfer token;
+    try {
+        ssToken >> token;
+    } catch(std::exception& e) {
+        std::cout << "Failed to get the token from the stream: " << e.what() << std::endl;
+        return false;
+    }
+
+    nAmount = token.nAmount;
+    return true;
+}
+
+bool AmountFromReissueScript(const CScript& scriptPubKey, CAmount& nAmount)
+{
+    int nStartingIndex = 0;
+    if (!ScriptReissueToken(scriptPubKey, nStartingIndex))
+        return false;
+
+    std::vector<unsigned char> vchNewToken;
+    vchNewToken.insert(vchNewToken.end(), scriptPubKey.begin() + nStartingIndex, scriptPubKey.end());
+    CDataStream ssToken(vchNewToken, SER_NETWORK, PROTOCOL_VERSION);
+
+    CReissueToken token;
+    try {
+        ssToken >> token;
+    } catch(std::exception& e) {
+        std::cout << "Failed to get the token from the stream: " << e.what() << std::endl;
+        return false;
+    }
+
+    nAmount = token.nAmount;
+    return true;
+}
+//!--------------------------------------------------------------------------------------------------------------------------!//
 
 CScript GetScriptForDestination(const CTxDestination& dest)
 {

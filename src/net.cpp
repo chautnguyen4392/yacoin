@@ -10,6 +10,7 @@
 #include "net.h"
 
 #include "addrman.h"
+#include "chainparams.h"
 #include "clientversion.h"
 #include "crypto/common.h"
 #include "crypto/sha256.h"
@@ -41,7 +42,6 @@
 #include <list>
 #include <vector>
 
-/* TACA: NEW CODE BEGIN */
 // Dump addresses to peers.dat and banlist.dat every 15 minutes (900s)
 #define DUMP_ADDRESSES_INTERVAL 900
 
@@ -2672,7 +2672,9 @@ bool CConnman::OutboundTargetReached(bool historicalBlockServingLimit)
     {
         // keep a large enough buffer to at least relay each block once
         uint64_t timeLeftInCycle = GetMaxOutboundTimeLeftInCycle();
-        uint64_t buffer = timeLeftInCycle / 600 * GetMaxSize(MAX_BLOCK_SIZE);
+        // Get the max block size before and after hardfork, choose the bigger
+        ::uint64_t maxBlockSize = std::max(GetMaxSize(MAX_BLOCK_SIZE, nMainnetNewLogicBlockNumber-1), GetMaxSize(MAX_BLOCK_SIZE));
+        uint64_t buffer = timeLeftInCycle / 600 * maxBlockSize;
         if (buffer >= nMaxOutboundLimit || nMaxOutboundTotalBytesSentInCycle >= nMaxOutboundLimit - buffer)
             return true;
     }
@@ -2905,7 +2907,6 @@ uint64_t CConnman::CalculateKeyedNetGroup(const CAddress& ad) const
 
     return GetDeterministicRandomizer(RANDOMIZER_ID_NETGROUP).Write(vchNetGroup.data(), vchNetGroup.size()).Finalize();
 }
-/* TACA: NEW CODE END */
 
 #ifdef _MSC_VER
 #include "msvc_warnings.pop.h"

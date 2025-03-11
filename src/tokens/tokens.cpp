@@ -3,52 +3,43 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <regex>
-#include <script/script.h>
-#include <version.h>
-
-//#include <streams.h>
-#include <serialize.h>
-
-#include <primitives/transaction.h>
-#include <iostream>
-
-//#include <script/standard.h>
-#include <script/script.h>
-
+#include "regex"
+#include "script/script.h"
+#include "version.h"
+#include "streams.h"
+#include "serialize.h"
+#include "primitives/transaction.h"
+//#include "script/standard.h"
 #include "util.h"
 #include "base58.h"
-
-//#include <chainparams.h>
-//#include <validation.h>
-//#include <txmempool.h>
-//#include <tinyformat.h>
-//#include <consensus/validation.h>
+#include "chainparams.h"
+#include "validation.h"
+#include "txmempool.h"
+#include "tinyformat.h"
+#include "consensus/validation.h"
 #include "main.h"
 #include "memusage.h"
 
-//#include <wallet/wallet.h>
+//#include "wallet/wallet.h"
 //#include "wallet/coincontrol.h"
 //#include "wallet/wallet.h"
-#include <wallet.h>
+#include "wallet.h"
+//#include "rpc/protocol.h"
+#include "bitcoinrpc.h"
 
+#include <iostream>
 #include <boost/algorithm/string.hpp>
 #include <boost/variant.hpp>
 
-//#include <rpc/protocol.h>
-#include <bitcoinrpc.h>
-
-#include <net.h>
+#include "net.h"
 #include "tokens.h"
 #include "tokendb.h"
 #include "tokentypes.h"
-#include "coins.h"
 #include "coincontrol.h"
 #include "protocol.h"
-//#include "utilmoneystr.h" -> replaced with util.h
-//#include "coins.h" -> not have coinsview
+#include "utilmoneystr.h"
+#include "coins.h"
 #include "LibBoolEE.h"
-#include "streams.h"
 
 #define SIX_MONTHS 15780000 // Six months worth of seconds
 
@@ -1097,7 +1088,7 @@ bool CTokensCache::ContainsToken(const std::string& tokenName)
     return CheckIfTokenExists(tokenName);
 }
 
-bool CTokensCache::UndoTokenCoin(const CTxOut& prevTxout, const COutPoint& out)
+bool CTokensCache::UndoTokenCoin(const Coin& coin, const COutPoint& out)
 {
     std::string strAddress = "";
     std::string tokenName = "";
@@ -1106,11 +1097,11 @@ bool CTokensCache::UndoTokenCoin(const CTxOut& prevTxout, const COutPoint& out)
     // Get the token tx from the script
     int nType = -1;
     bool fIsOwner = false;
-    if(prevTxout.scriptPubKey.IsTokenScript(nType, fIsOwner)) {
+    if(coin.out.scriptPubKey.IsTokenScript(nType, fIsOwner)) {
 
         if (nType == TX_NEW_TOKEN && !fIsOwner) {
             CNewToken token;
-            if (!TokenFromScript(prevTxout.scriptPubKey, token, strAddress)) {
+            if (!TokenFromScript(coin.out.scriptPubKey, token, strAddress)) {
                 return error("%s : Failed to get token from script while trying to undo token spend. OutPoint : %s",
                              __func__,
                              out.ToString());
@@ -1120,7 +1111,7 @@ bool CTokensCache::UndoTokenCoin(const CTxOut& prevTxout, const COutPoint& out)
             nAmount = token.nAmount;
         } else if (nType == TX_TRANSFER_TOKEN) {
             CTokenTransfer transfer;
-            if (!TransferTokenFromScript(prevTxout.scriptPubKey, transfer, strAddress))
+            if (!TransferTokenFromScript(coin.out.scriptPubKey, transfer, strAddress))
                 return error(
                         "%s : Failed to get transfer token from script while trying to undo token spend. OutPoint : %s",
                         __func__,
@@ -1130,7 +1121,7 @@ bool CTokensCache::UndoTokenCoin(const CTxOut& prevTxout, const COutPoint& out)
             nAmount = transfer.nAmount;
         } else if (nType == TX_NEW_TOKEN && fIsOwner) {
             std::string ownerName;
-            if (!OwnerTokenFromScript(prevTxout.scriptPubKey, ownerName, strAddress))
+            if (!OwnerTokenFromScript(coin.out.scriptPubKey, ownerName, strAddress))
                 return error(
                         "%s : Failed to get owner token from script while trying to undo token spend. OutPoint : %s",
                         __func__, out.ToString());
@@ -1138,7 +1129,7 @@ bool CTokensCache::UndoTokenCoin(const CTxOut& prevTxout, const COutPoint& out)
             nAmount = OWNER_TOKEN_AMOUNT;
         } else if (nType == TX_REISSUE_TOKEN) {
             CReissueToken reissue;
-            if (!ReissueTokenFromScript(prevTxout.scriptPubKey, reissue, strAddress))
+            if (!ReissueTokenFromScript(coin.out.scriptPubKey, reissue, strAddress))
                 return error(
                         "%s : Failed to get reissue token from script while trying to undo token spend. OutPoint : %s",
                         __func__, out.ToString());

@@ -238,6 +238,9 @@ BITCOIN_QT_CPP = \
   tokens/tokentypes.cpp \
   tokens/tokendb.cpp \
   tokens/tokens.cpp \
+  chain.cpp \
+  chainparams.cpp \
+  chainparamsbase.cpp \
   crypto/siphash.cpp \
   crypto/chacha20.cpp \
   crypto/sha256.cpp \
@@ -246,17 +249,22 @@ BITCOIN_QT_CPP = \
   crypto/hmac_sha256.cpp \
   crypto/hmac_sha512.cpp \
   compat/strnlen.cpp \
+  coins.cpp \
+  compressor.cpp \
+  consensus/consensus.cpp \
+  consensus/tx_verify.cpp \
   primitives/transaction.cpp \
   primitives/block.cpp \
-  consensus/consensus.cpp \
   merkleblock.cpp \
   blockencodings.cpp \
+  policy/policy.cpp \
   policy/feerate.cpp \
   policy/fees.cpp \
+  pow.cpp \
   support/cleanse.cpp \
   init.cpp \
   dbwrapper.cpp \
-  txdb-leveldb.cpp \
+  txdb.cpp \
   hash.cpp \
   base58.cpp \
   version.cpp \
@@ -267,9 +275,11 @@ BITCOIN_QT_CPP = \
   bloom.cpp \
   threadinterrupt.cpp \
   crypter.cpp \
+  compressor.cpp \
   key.cpp \
   db.cpp \
   fs.cpp \
+  validation.cpp \
   validationinterface.cpp \
   scheduler.cpp \
   torcontrol.cpp \
@@ -299,6 +309,7 @@ BITCOIN_QT_CPP = \
   sync.cpp \
   util.cpp \
   utilstrencodings.cpp \
+  utilmoneystr.cpp \
   utiltime.cpp \
   netaddress.cpp \
   timedata.cpp \
@@ -370,7 +381,7 @@ qt_yacoin_qt_LDADD = qt/libbitcoinqt.a $(LIBBITCOIN_SERVER)
 if ENABLE_WALLET
 qt_yacoin_qt_LDADD += $(LIBBITCOIN_WALLET)
 endif
-qt_yacoin_qt_LDADD += $(LIBLEVELDB) $(LIBMEMENV) $(BOOST_LIBS) $(QT_LIBS) $(QT_DBUS_LIBS) $(QR_LIBS) \
+qt_yacoin_qt_LDADD += $(LIBLEVELDB) $(LIBLEVELDB_SSE42) $(LIBMEMENV) $(BOOST_LIBS) $(QT_LIBS) $(QT_DBUS_LIBS) $(QR_LIBS) \
   $(PROTOBUF_LIBS) $(BDB_LIBS) $(SSL_LIBS) $(CRYPTO_LIBS) $(MINIUPNPC_LIBS) $(LIBSECP256K1) $(EVENT_PTHREADS_LIBS) $(EVENT_LIBS) -ldl -lrt
 qt_yacoin_qt_LDFLAGS = $(RELDFLAGS) $(AM_LDFLAGS) $(QT_LDFLAGS) $(LIBTOOL_APP_LDFLAGS)
 qt_yacoin_qt_LIBTOOLFLAGS = --tag CXX

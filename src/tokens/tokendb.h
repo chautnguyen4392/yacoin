@@ -7,6 +7,7 @@
 #define YACOIN_TOKENDB_H
 
 #include "amount.h"
+#include "fs.h"
 #include "serialize.h"
 #include "dbwrapper.h"
 
@@ -40,7 +41,7 @@ struct CBlockTokenUndo
 class CTokensDB : public CDBWrapper
 {
 public:
-    explicit CTokensDB(const char* pszMode="r+", bool fWipe=false);
+    explicit CTokensDB(size_t nCacheSize, bool fMemory = false, bool fWipe = false);
 
     CTokensDB(const CTokensDB&) = delete;
     CTokensDB& operator=(const CTokensDB&) = delete;

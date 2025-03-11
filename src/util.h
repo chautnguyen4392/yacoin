@@ -47,7 +47,6 @@
 #include "amount.h"
 #include "utilstrencodings.h"
 
-/* TACA: NEW CODE BEGIN */
 // Application startup time (used for uptime calculation)
 int64_t GetStartupTime();
 
@@ -126,8 +125,7 @@ namespace BCLog {
 /** Return true if log accepts specified category */
 static inline bool LogAcceptCategory(uint32_t category)
 {
-    return true;
-//    return (logCategories.load(std::memory_order_relaxed) & category) != 0;
+    return (logCategories.load(std::memory_order_relaxed) & category) != 0;
 }
 
 /** Returns a string with the log categories. */
@@ -338,7 +336,6 @@ template <typename Callable> void TraceThread(const char* name,  Callable func)
 }
 
 std::string CopyrightHolders(const std::string& strPrefix);
-/* TACA: NEW CODE END */
 
 //THEREFORE
 const int COINdecimalPower = 16;     // i.e. log10( COIN )
@@ -439,11 +436,9 @@ inline void Sleep(::int64_t n)
 }
 #endif
 
+extern std::atomic<bool> fRequestShutdown;
 extern bool 
     fDebug,
-    fDebugNet,
-    fPrintToDebugLog,
-    fRequestShutdown,
     fShutdown,
     fDaemon,
     fServer,
@@ -456,14 +451,11 @@ extern ::uint32_t
 extern ::int64_t
     nYac10HardforkTime;
 extern std::string strMiscWarning;
-extern unsigned char MAXIMUM_YAC1DOT0_N_FACTOR;
+extern unsigned char nFactorAtHardfork;
 
 extern unsigned long long getTotalSystemMemory( void );
 void PrintException(std::exception* pex, const char* pszThread);
 void ParseString(const std::string& str, char c, std::vector<std::string>& v);
-std::string FormatMoney(::int64_t n, bool fPlus=false);
-bool ParseMoney(const std::string& str, ::int64_t& nRet);
-bool ParseMoney(const char* pszIn, ::int64_t& nRet);
 std::string EncodeDumpTime(::int64_t nTime);
 ::int64_t DecodeDumpTime(const std::string& s);
 std::string EncodeDumpString(const std::string &str);

@@ -14,14 +14,10 @@
 #include "serialize.h"
 #include "uint256.h"
 
-class CTxDB;
-class CTxIndex;
 class CValidationState;
 class CDiskTxPos;
 class CScriptCheck;
 class CBlockIndex;
-typedef std::map<uint256, std::pair<CTxIndex, CTransaction> > MapPrevTx;
-FILE* OpenBlockFile(unsigned int nFile, unsigned int nBlockPos, const char* pszMode="rb");
 
 static const int SERIALIZE_TRANSACTION_NO_WITNESS = 0x40000000;
 
@@ -154,11 +150,6 @@ public:
         READWRITE(nSequence);
     }
 
-    bool IsFinal() const
-    {
-        return (nSequence == SEQUENCE_FINAL);
-    }
-
     friend bool operator==(const CTxIn& a, const CTxIn& b)
     {
         return (a.prevout   == b.prevout &&
@@ -169,11 +160,6 @@ public:
     friend bool operator!=(const CTxIn& a, const CTxIn& b)
     {
         return !(a == b);
-    }
-
-    std::string ToStringShort() const
-    {
-        return strprintf(" %s %d", prevout.COutPointGetHash().ToString().c_str(), prevout.COutPointGet_n());
     }
 
     std::string ToString() const
@@ -263,18 +249,7 @@ public:
         return !(a == b);
     }
 
-    std::string ToStringShort() const
-    {
-        return strprintf(" out %s %s", FormatMoney(nValue).c_str(), scriptPubKey.ToString(true).c_str());
-    }
-
-    std::string ToString() const
-    {
-        if (IsEmpty()) return "CTxOut(empty)";
-        if (scriptPubKey.size() < 6)
-            return "CTxOut(error)";
-        return strprintf("CTxOut(nValue=%s, scriptPubKey=%s)", FormatMoney(nValue).c_str(), scriptPubKey.ToString().c_str());
-    }
+    std::string ToString() const;
 
     void print() const
     {
@@ -292,9 +267,14 @@ public:
         CURRENT_VERSION_of_Tx_for_yac_old = 1,      // this should be different for Yac1.0
         CURRENT_VERSION_of_Tx_for_yac_new = 2;
 
-    static const int
-      //CURRENT_VERSION_of_Tx = CURRENT_VERSION_of_Tx_for_yac_old;
-        CURRENT_VERSION_of_Tx = CURRENT_VERSION_of_Tx_for_yac_old;
+    // Default transaction version.
+    static const int CURRENT_VERSION = 2;
+
+    // Changing the default transaction version requires a two step process: first
+    // adapting relay policy by bumping MAX_STANDARD_VERSION, and then later date
+    // bumping the default CURRENT_VERSION at which point both CURRENT_VERSION and
+    // MAX_STANDARD_VERSION will be equal.
+    static const int32_t MAX_STANDARD_VERSION=2;
 
     int nVersion;
     mutable ::int64_t nTime;
@@ -379,37 +359,6 @@ public:
         }
     }
 
-    bool IsFinal(int nBlockHeight=0, ::int64_t nBlockTime=0) const;
-
-    bool IsNewerThan(const CTransaction& old) const
-    {
-        if (vin.size() != old.vin.size())
-            return false;
-        for (unsigned int i = 0; i < vin.size(); i++)
-            if (vin[i].prevout != old.vin[i].prevout)
-                return false;
-
-        bool fNewer = false;
-        unsigned int nLowest = CTxIn::SEQUENCE_FINAL;
-        for (unsigned int i = 0; i < vin.size(); i++)
-        {
-            if (vin[i].nSequence != old.vin[i].nSequence)
-            {
-                if (vin[i].nSequence <= nLowest)
-                {
-                    fNewer = false;
-                    nLowest = vin[i].nSequence;
-                }
-                if (old.vin[i].nSequence < nLowest)
-                {
-                    fNewer = true;
-                    nLowest = old.vin[i].nSequence;
-                }
-            }
-        }
-        return fNewer;
-    }
-
     unsigned int GetTotalSize() const;
 
     bool IsCoinBase() const
@@ -423,44 +372,13 @@ public:
         return (vin.size() > 0 && (!vin[0].prevout.IsNull()) && vout.size() >= 2 && vout[0].IsEmpty());
     }
 
-    /** Check for standard transaction types
-        @return True if all outputs (scriptPubKeys) use only standard transaction forms
-    */
-    bool IsStandard(std::string& strReason) const;
-    //bool IsStandard() const
-    //{
-    //    std::string strReason;
-    //    return IsStandard(strReason);
-    //}
-
-    /** Check for standard transaction types
-        @param[in] mapInputs	Map of previous transactions that have outputs we're spending
-        @return True if all inputs (scriptSigs) use only standard transaction forms
-        @see CTransaction::FetchInputs
-    */
-    bool AreInputsStandard(const MapPrevTx& mapInputs) const;
-
-    /** Count ECDSA signature operations the old-fashioned (pre-0.6) way
-        @return number of sigops this transaction's outputs will produce when spent
-        @see CTransaction::FetchInputs
-    */
-    unsigned int GetLegacySigOpCount() const;
-
-    /** Count ECDSA signature operations in pay-to-script-hash inputs.
-
-        @param[in] mapInputs	Map of previous transactions that have outputs we're spending
-        @return maximum number of sigops required to validate this transaction's inputs
-        @see CTransaction::FetchInputs
-     */
-    unsigned int GetP2SHSigOpCount(const MapPrevTx& mapInputs) const;
-
     /** Amount of bitcoins spent by this transaction.
         @return sum of all outputs (note: does not include fees)
      */
     ::int64_t GetValueOut() const
     {
         ::int64_t nValueOut = 0;
-        BOOST_FOREACH(const CTxOut& txout, vout)
+        for(const CTxOut& txout : vout)
         {
             nValueOut += txout.nValue;
             if (!MoneyRange(txout.nValue) || !MoneyRange(nValueOut))
@@ -469,26 +387,12 @@ public:
         return nValueOut;
     }
 
-    /** Amount of bitcoins coming in to this transaction
-        Note that lightweight clients may not know anything besides the hash of previous transactions,
-        so may not be able to calculate this.
-
-        @param[in] mapInputs	Map of previous transactions that have outputs we're spending
-        @return	Sum of value of all inputs (scriptSigs)
-        @see CTransaction::FetchInputs
-     */
-    ::int64_t GetValueIn(const MapPrevTx& mapInputs) const;
-
     static bool AllowFree(double dPriority)
     {
         // Large (in bytes) low-priority (new, small-coin) transactions
         // need a fee.
         return dPriority > COIN * 144 / 250;
     }
-
-    ::int64_t GetMinFee(unsigned int nBytes = 0) const;
-
-    bool ReadFromDisk(CDiskTxPos pos, FILE** pfileRet=NULL);
 
     friend bool operator==(const CTransaction& a, const CTransaction& b)
     {
@@ -502,13 +406,6 @@ public:
     friend bool operator!=(const CTransaction& a, const CTransaction& b)
     {
         return !(a == b);
-    }
-
-    std::string ToStringShort() const
-    {
-        std::string str;
-        str += strprintf("%s %s", GetHash().ToString().c_str(), IsCoinBase()? "base" : (IsCoinStake()? "stake" : "user"));
-        return str;
     }
 
     std::string ToString() const
@@ -542,47 +439,6 @@ public:
         LogPrintf("%s", ToString());
     }
 
-
-    bool ReadFromDisk(CTxDB& txdb, COutPoint prevout, CTxIndex& txindexRet);
-    bool ReadFromDisk(CTxDB& txdb, COutPoint prevout);
-    bool ReadFromDisk(COutPoint prevout);
-    bool DisconnectInputs(CValidationState &state, CTxDB& txdb);
-
-    /** Fetch from memory and/or disk. inputsRet keys are transaction hashes.
-
-     @param[in] txdb	Transaction database
-     @param[in] mapTestPool	List of pending changes to the transaction index database
-     @param[in] fBlock	True if being called to add a new best-block to the chain
-     @param[in] fMiner	True if being called by CreateNewBlock
-     @param[out] inputsRet	Pointers to this transaction's inputs
-     @param[out] fInvalid	returns true if transaction is invalid
-     @return	Returns true if all inputs are in txdb or mapTestPool
-     */
-    bool FetchInputs(CValidationState &state, CTxDB& txdb, const std::map<uint256, CTxIndex>& mapTestPool,
-                     bool fBlock, bool fMiner, MapPrevTx& inputsRet, bool& fInvalid) const;
-
-    /** Sanity check previous transactions, then, if all checks succeed,
-        mark them as spent by this transaction.
-
-        @param[in] inputs	Previous transactions (from FetchInputs)
-        @param[out] mapTestPool	Keeps track of inputs that need to be updated on disk
-        @param[in] posThisTx	Position of this transaction on disk
-        @param[in] pindexBlock
-        @param[in] fBlock	true if called from ConnectBlock
-        @param[in] fMiner	true if called from CreateNewBlock
-        @param[in] fScriptChecks	enable scripts validation?
-        @param[in] flags	STRICT_FLAGS script validation flags
-        @param[in] pvChecks	NULL If pvChecks is not NULL, script checks are pushed onto it instead of being performed inline.
-        @return Returns true if all checks succeed
-     */
-    bool ConnectInputs(CValidationState &state, CTxDB& txdb, MapPrevTx inputs, std::map<uint256, CTxIndex>& mapTestPool, const CDiskTxPos& posThisTx, const CBlockIndex* pindexBlock,
-                     bool fBlock, bool fMiner, bool fScriptChecks=true,
-                     unsigned int flags=STRICT_FLAGS, std::vector<CScriptCheck> *pvChecks = NULL) const;
-    bool ClientConnectInputs();
-    bool CheckTransaction(CValidationState &state) const;
-    bool AcceptToMemoryPool(CValidationState &state, CTxDB& txdb, bool *pfMissingInputs=NULL) const;
-    bool GetCoinAge(CTxDB& txdb, ::uint64_t& nCoinAge) const;  // ppcoin: get transaction coin age
-
     /** YAC_TOKEN START */
     bool IsNewToken() const;
     bool VerifyNewToken(std::string& strError) const;
@@ -591,9 +447,6 @@ public:
     bool IsReissueToken() const;
     bool VerifyReissueToken(std::string& strError) const;
     /** YAC_TOKEN END */
-
-protected:
-    const CTxOut& GetOutputFor(const CTxIn& input, const MapPrevTx& inputs) const;
 };
 
 typedef std::shared_ptr<const CTransaction> CTransactionRef;

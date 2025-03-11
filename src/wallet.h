@@ -38,21 +38,6 @@ class CCoinControl;
 // Set of selected transactions
 typedef std::set<std::pair<const CWalletTx*,unsigned int> > CoinsSet;
 
-// Preloaded coins metadata
-// (txid, vout.n) => ((txindex, (tx, vout.n)), (block, modifier))
-//typedef std::map< std::pair<uint256, unsigned int>, std::pair< std::pair< CTxIndex, std::pair<const CWalletTx*,unsigned int> >, std::pair<CBlock, ::uint64_t> > > MetaMap;
-typedef std::map<
-                  std::pair<uint256, unsigned int>,     // the unique key
-                  std::pair<
-                            std::pair<
-                                      CTxIndex, 
-                                      std::pair<const CWalletTx*,unsigned int> 
-                                     >, 
-                            std::pair<CBlock, ::uint64_t> 
-                           >                            // the value 
-                > MetaMap;
-
-
 /** (client) version numbers for particular wallet features */
 enum WalletFeature
 {
@@ -133,9 +118,6 @@ private:
 
     // the maximum wallet format version: memory-only variable that specifies to what version this wallet may be upgraded
     int nWalletMaxVersion;
-
-    // selected coins metadata
-    std::map<std::pair<uint256, unsigned int>, std::pair<std::pair<CTxIndex, std::pair<const CWalletTx*,unsigned int> >, std::pair<CBlock, uint64_t> > > mapMeta;
 
     // stake mining statistics
     ::uint64_t nKernelsTried;
@@ -1012,61 +994,15 @@ public:
         return (GetDebit(filter) > 0);
     }
 
-    bool IsTrusted() const
-    {
-        // Quick answer in most cases
-        if (!IsFinal())
-            return false;
-        if (GetDepthInMainChain() >= 1)
-            return true;
-        if (fConfChange || !IsFromMe(MINE_ALL)) // using wtx's cached debit
-            return false;
-
-        // If no confirmations but it's from us, we can still
-        // consider it confirmed if all dependencies are confirmed
-        std::map<uint256, const CMerkleTx*> mapPrev;
-        std::vector<const CMerkleTx*> vWorkQueue;
-        vWorkQueue.reserve(vtxPrev.size()+1);
-        vWorkQueue.push_back(this);
-        for (unsigned int i = 0; i < vWorkQueue.size(); i++)
-        {
-            const CMerkleTx* ptx = vWorkQueue[i];
-
-            if (!ptx->IsFinal())
-                return false;
-            if (ptx->GetDepthInMainChain() >= 1)
-                continue;
-            if (!pwallet->IsFromMe(*ptx))
-                return false;
-
-            if (mapPrev.empty())
-            {
-                BOOST_FOREACH(const CMerkleTx& tx, vtxPrev)
-                    mapPrev[tx.GetHash()] = &tx;
-            }
-
-            BOOST_FOREACH(const CTxIn& txin, ptx->vin)
-            {
-                if (!mapPrev.count(txin.prevout.COutPointGetHash()))
-                    return false;
-                vWorkQueue.push_back(mapPrev[txin.prevout.COutPointGetHash()]);
-            }
-        }
-
-        return true;
-    }
-
+    bool IsTrusted() const;
     bool WriteToDisk();
 
     ::int64_t GetTxTime() const;
     int GetRequestCount() const;
 
-    void AddSupportingTransactions(CTxDB& txdb);
+    void AddSupportingTransactions();
 
-    bool AcceptWalletTransaction(CTxDB& txdb);
     bool AcceptWalletTransaction();
-
-    void RelayWalletTransaction(CTxDB& txdb);
     void RelayWalletTransaction();
 };
 
@@ -1121,10 +1057,7 @@ public:
         tx = txIn; i = iIn; nDepth = nDepthIn; fSpendable = fSpendableIn; fSafe = fSafeIn;
     }
 
-    std::string ToString() const
-    {
-        return strprintf("COutput(%s, %d, %d, %d) [%s]", tx->GetHash().ToString(), i, fSpendable, nDepth, FormatMoney(tx->vout[i].nValue).c_str());
-    }
+    std::string ToString() const;
 
     void print() const
     {

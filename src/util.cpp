@@ -8,6 +8,7 @@
 
 #include "util.h"
 
+#include "chainparamsbase.h"
 #include "fs.h"
 #include "random.h"
 #include "serialize.h"
@@ -96,7 +97,6 @@
 #include <execinfo.h>
 #endif
 
-/* TACA: NEW CODE BEGIN */
 // Application startup time (used for uptime calculation)
 const int64_t nStartupTime = GetTime();
 
@@ -562,11 +562,6 @@ fs::path GetDefaultDataDir()
 static fs::path pathCached;
 static fs::path pathCachedNetSpecific;
 static CCriticalSection csPathCached;
-/* TACA: NEW CODE END */
-
-
-
-
 
 using std::map;
 using std::string;
@@ -577,15 +572,13 @@ using std::set;
 namespace bt = boost::posix_time;
 
 bool fDebug = false;
-bool fDebugNet = false;
 ::int32_t nMainnetNewLogicBlockNumber;
 ::int32_t nTokenSupportBlockNumber;
-unsigned char MAXIMUM_YAC1DOT0_N_FACTOR;
+unsigned char nFactorAtHardfork;
 ::int64_t nYac10HardforkTime = 1619048730;
 // Epoch interval is a difficulty period. Right now on testnet, it is 21,000 blocks
 ::uint32_t nEpochInterval = 21000;
 ::uint32_t nDifficultyInterval = nEpochInterval;
-bool fRequestShutdown = false;
 bool fShutdown = false;
 bool fDaemon = false;
 bool fServer = false;
@@ -635,80 +628,6 @@ void ParseString(const string& str, char c, vector<string>& v)
         v.push_back(str.substr(i1, i2-i1));
         i1 = i2+1;
     }
-}
-
-
-string FormatMoney(int64_t n, bool fPlus)
-{
-    // Note: not using straight sprintf here because we do NOT want
-    // localized number formatting.
-    int64_t n_abs = (n > 0 ? n : -n);
-    int64_t quotient = n_abs/COIN;
-    int64_t remainder = n_abs%COIN;
-    string str = strprintf("%" PRId64 ".%06" PRId64, quotient, remainder);
-                    // because COIN is 10^6
-
-    // Right-trim excess zeros before the decimal point:
-    // doesn't this (instead!) remove trailing 0's after the last non zero digit!?
-    int 
-        nTrim = 0;
-
-    for (int i = str.size()-1; (str[i] == '0' && isdigit(str[i-2])); --i)
-        ++nTrim;
-    if (nTrim)
-        str.erase(str.size()-nTrim, nTrim);
-
-    if (n < 0)
-        str.insert((unsigned int)0, 1, '-');
-    else if (fPlus && n > 0)
-        str.insert((unsigned int)0, 1, '+');
-    return str;
-}
-
-
-bool ParseMoney(const string& str, int64_t& nRet)
-{
-    return ParseMoney(str.c_str(), nRet);
-}
-
-bool ParseMoney(const char* pszIn, int64_t& nRet)
-{
-    string strWhole;
-    int64_t nUnits = 0;
-    const char* p = pszIn;
-    while (isspace(*p))
-        p++;
-    for (; *p; p++)
-    {
-        if (*p == '.')
-        {
-            p++;
-            int64_t nMult = CENT*10;
-            while (isdigit(*p) && (nMult > 0))
-            {
-                nUnits += nMult * (*p++ - '0');
-                nMult /= 10;
-            }
-            break;
-        }
-        if (isspace(*p))
-            break;
-        if (!isdigit(*p))
-            return false;
-        strWhole.insert(strWhole.end(), *p);
-    }
-    for (; *p; p++)
-        if (!isspace(*p))
-            return false;
-    if (strWhole.size() > 10) // guard against 63 bit overflow
-        return false;
-    if (nUnits < 0 || nUnits > COIN)
-        return false;
-    int64_t nWhole = atoi64(strWhole);
-    int64_t nValue = nWhole*COIN + nUnits;
-
-    nRet = nValue;
-    return true;
 }
 
 static void InterpretNegativeSetting(string name, map<string, string>& mapSettingsRet)
@@ -830,8 +749,8 @@ const fs::path &GetDataDir(bool fNetSpecific)
     } else {
         path = GetDefaultDataDir();
     }
-    if (fNetSpecific && gArgs.GetBoolArg("-testnet", false))
-        path /= "testnet";
+    if (fNetSpecific)
+        path /= BaseParams().DataDir();
 
     fs::create_directories(path);
 
@@ -1184,11 +1103,12 @@ bool SetupNetworking()
 
 int GetNumCores()
 {
-#if BOOST_VERSION >= 105600
-    return boost::thread::physical_concurrency();
-#else // Must fall back to hardware_concurrency, which unfortunately counts virtual cores
     return boost::thread::hardware_concurrency();
-#endif
+//#if BOOST_VERSION >= 105600
+//    return boost::thread::physical_concurrency();
+//#else // Must fall back to hardware_concurrency, which unfortunately counts virtual cores
+//    return boost::thread::hardware_concurrency();
+//#endif
 }
 
 // Obtain the application startup time (used for uptime calculation)

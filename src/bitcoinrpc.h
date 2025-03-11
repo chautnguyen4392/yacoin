@@ -249,7 +249,6 @@ extern json_spirit::Value walletlock(const json_spirit::Array& params, bool fHel
 extern json_spirit::Value encryptwallet(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value validateaddress(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getinfo(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value reservebalance(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value checkwallet(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value repairwallet(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value resendtx(const json_spirit::Array& params, bool fHelp);
@@ -269,8 +268,7 @@ extern json_spirit::Value getbestblockhash(const json_spirit::Array& params, boo
 extern json_spirit::Value gettimechaininfo(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
 extern json_spirit::Value getblockcount(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
 extern json_spirit::Value getwalletinfo(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
-extern bool isThisInGMT( time_t & tBlock, struct tm  &aTimeStruct );
-extern json_spirit::Value getcurrentblockandtime(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value getblockcount(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
 extern json_spirit::Value getYACprice(const json_spirit::Array& params, bool fHelp);
 extern double doGetYACprice(void);
 extern json_spirit::Value getdifficulty(const json_spirit::Array& params, bool fHelp);
@@ -280,7 +278,6 @@ extern json_spirit::Value getblockhash(const json_spirit::Array& params, bool fH
 extern json_spirit::Value getblock(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getblockbynumber(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getblocktimes(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value getcheckpoint(const json_spirit::Array& params, bool fHelp);
 
 extern json_spirit::Value generatetoaddress(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value timelockcoins(const json_spirit::Array& params, bool fHelp);

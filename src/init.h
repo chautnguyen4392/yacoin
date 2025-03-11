@@ -29,8 +29,9 @@ extern std::string strWalletFileName;
 /** Interrupt threads */
 void Interrupt(boost::thread_group& threadGroup);
 void StartShutdown();
-void Shutdown(void* parg);
-bool AppInit2(boost::thread_group& threadGroup, CScheduler& scheduler);
+bool ShutdownRequested();
+void Shutdown();
+bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler);
 std::string HelpMessage();
 
 #endif

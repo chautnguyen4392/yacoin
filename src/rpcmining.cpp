@@ -7,23 +7,16 @@
 
     #include "msvc_warnings.push.h"
 #endif
+#include "bitcoinrpc.h"
 
-#ifndef BITCOIN_TXDB_H
- #include "txdb-leveldb.h"
-#endif
-
-#ifndef BITCOIN_INIT_H
- #include "init.h"
-#endif
-
-#ifndef NOVACOIN_MINER_H
- #include "miner.h"
-#endif
-
-#ifndef _BITCOINRPC_H_
- #include "bitcoinrpc.h"
-#endif
+#include "chainparams.h"
+#include "consensus/validation.h"
+#include "init.h"
+#include "miner.h"
+#include "txdb.h"
 #include "streams.h"
+
+#include "pow.h"
 
 using namespace json_spirit;
 
@@ -99,7 +92,7 @@ Value getsubsidy(const Array& params, bool fHelp)
         nBits = GetNextTargetRequired(chainActive.Tip(), false);
     }
 
-    return (Value_type)GetProofOfWorkReward(nBits);
+    return (Value_type)GetProofOfWorkReward(nBits, 0, chainActive.Height() + 1);
 }
 
 Value generatetoaddress(const Array& params, bool fHelp){
@@ -143,13 +136,7 @@ Value getmininginfo(const Array& params, bool fHelp)
             "getmininginfo\n"
             "Returns an object containing mining-related information.");
 
-    float 
-        nKernelsRate = 0, 
-        nCoinDaysRate = 0;
-
-    pwalletMain->GetStakeStats(nKernelsRate, nCoinDaysRate);
-
-    Object obj, diff, weight;
+    Object obj, diff;
     obj.push_back(Pair("blocks",        (int)chainActive.Height()));
     obj.push_back(Pair("currentblocksize",(Value_type)nLastBlockSize));
     obj.push_back(Pair("currentblocktx",(Value_type)nLastBlockTx));
@@ -169,13 +156,6 @@ Value getmininginfo(const Array& params, bool fHelp)
     obj.push_back(Pair("genproclimit",  (int)gArgs.GetArg("-genproclimit", -1)));
     obj.push_back(Pair("hashespersec",  gethashespersec(params, false)));
     obj.push_back(Pair("pooledtx",      (Value_type)mempool.size()));
-
-    weight.push_back(Pair("kernelsrate",   nKernelsRate));
-    weight.push_back(Pair("cdaysrate",   nCoinDaysRate));
-    obj.push_back(Pair("stakestats", weight));
-
-    obj.push_back(Pair("stakeinterest %",(Value_type)GetProofOfStakeReward(0, GetLastBlockIndex(chainActive.Tip(), true)->nBits,
-                                                                 GetLastBlockIndex(chainActive.Tip(), true)->nTime, true) / 10000));
     obj.push_back(Pair("testnet",       fTestNet));
 
     // WM - Tweaks to report current Nfactor and N.
@@ -575,8 +555,7 @@ Value getblocktemplate(const Array& params, bool fHelp)
     Array transactions;
     map<uint256, Value_type> setTxIndex;
     int i = 0;
-    CTxDB txdb("r");
-    BOOST_FOREACH (CTransaction& tx, pblock->vtx)
+    for(CTransaction& tx : pblock->vtx)
     {
         uint256 txHash = tx.GetHash();
         setTxIndex[txHash] = (Value_type)(i++);
@@ -592,29 +571,17 @@ Value getblocktemplate(const Array& params, bool fHelp)
 
         entry.push_back(Pair("hash", txHash.GetHex()));
 
-        MapPrevTx mapInputs;
-        map<uint256, CTxIndex> mapUnused;
-        bool fInvalid = false;
-        CValidationState state;
-        if (tx.FetchInputs(state, txdb, mapUnused, false, false, mapInputs, fInvalid))
+        Array deps;
+        for (const CTxIn &in : tx.vin)
         {
-            entry.push_back(Pair("fee", (Value_type)(tx.GetValueIn(mapInputs) - tx.GetValueOut())));
-
-            Array deps;
-            BOOST_FOREACH (MapPrevTx::value_type& inp, mapInputs)
-            {
-                if (setTxIndex.count(inp.first)){
-                    Value_type temp = setTxIndex[inp.first];
-                    deps.push_back(temp);
-                }
-            }
-            entry.push_back(Pair("depends", deps));
-
-            int64_t nSigOps = tx.GetLegacySigOpCount();
-            nSigOps += tx.GetP2SHSigOpCount(mapInputs);
-            entry.push_back(Pair("sigops", (Value_type)nSigOps));
+            if (setTxIndex.count(in.prevout.hash))
+                deps.push_back(setTxIndex[in.prevout.hash]);
         }
+        entry.push_back(Pair("depends", deps));
 
+        int index_in_template = i - 1;
+        entry.push_back(Pair("fee", (Value_type)pblocktemplate->vTxFees[index_in_template]));
+        entry.push_back(Pair("sigops", (Value_type)pblocktemplate->vTxSigOpsCost[index_in_template]));
         transactions.push_back(entry);
     }
 
@@ -661,7 +628,8 @@ Value submitblock(const Array& params, bool fHelp)
 
     vector<unsigned char> blockData(ParseHex(params[0].get_str()));
     CDataStream ssBlock(blockData, SER_NETWORK, PROTOCOL_VERSION);
-    CBlock block;
+    std::shared_ptr<CBlock> blockptr = std::make_shared<CBlock>();
+    CBlock& block = *blockptr;
     try {
         ssBlock >> block;
     }
@@ -677,8 +645,7 @@ Value submitblock(const Array& params, bool fHelp)
     if (!block.SignBlock(*pwalletMain))
         throw JSONRPCError(-100, "Unable to sign block, wallet locked?");
 
-    CValidationState state;
-    bool fAccepted = ProcessBlock(state, &block, true, nullptr);
+    bool fAccepted = ProcessNewBlock(Params(), blockptr, true, nullptr);
     if (!fAccepted)
         return "rejected";
 

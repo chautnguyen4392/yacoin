@@ -20,6 +20,7 @@
 #ifndef BITCOIN_MAIN_H
     #include "main.h"
 #endif
+#include "validation.h"
 //#include "guiconstants.h"
 
 //#include <QAbstractItemDelegate>
@@ -398,7 +399,8 @@ void ExplorerPage::showBlockHashLineDetails()
     ********************************************/
     if ( pblockindex )
     {
-        block.ReadFromDisk( pblockindex, true );
+        const Consensus::Params& consensusParams = Params().GetConsensus();
+        ReadBlockFromDisk(block, pblockindex, consensusParams);
 
         CMerkleTx 
             txGen( block.vtx[ 0 ] );
@@ -527,7 +529,8 @@ void ExplorerPage::showTxInfoDetails( QModelIndex QMI )
 
         if ( pblockindex )
         {
-            block.ReadFromDisk( pblockindex, true );
+            const Consensus::Params& consensusParams = Params().GetConsensus();
+            ReadBlockFromDisk(block, pblockindex, consensusParams);
 
             CMerkleTx 
                 txGen( block.vtx[ 0 ] );    // fixed it!!! Code that is inside read JSON!!!!!
@@ -609,10 +612,10 @@ void ExplorerPage::showBkInfoDetails( QModelIndex QMI )
         CBlockIndex
             *pblockindex = mapBlockIndex[ hashOfSelectedValue ];
 
-        CBlock 
-            block;
+        CBlock block;
 
-        block.ReadFromDisk(pblockindex, true);
+        const Consensus::Params& consensusParams = Params().GetConsensus();
+        ReadBlockFromDisk(block, pblockindex, consensusParams);
 
         CMerkleTx 
             txGen( block.vtx[ 0 ] );    // fixed it!!! Code that is inside read JSON!!!!!
@@ -646,13 +649,11 @@ void ExplorerPage::showBkInfoDetails( QModelIndex QMI )
     uint256
         hashOfBlock( QSblockhash.toStdString() );
 
-    CBlockIndex
-        *pthisblockindex = mapBlockIndex[ hashOfBlock ];
+    CBlockIndex *pthisblockindex = mapBlockIndex[ hashOfBlock ];
 
-    CBlock 
-        thisblock;
-
-    thisblock.ReadFromDisk( pthisblockindex, true );
+    CBlock thisblock;
+    const Consensus::Params& consensusParams = Params().GetConsensus();
+    ReadBlockFromDisk(thisblock, pthisblockindex, consensusParams);
 
     int 
         nThisVTxSize = (int)thisblock.vtx.size(),
@@ -1186,13 +1187,13 @@ void ExplorerPage::setNumBlocks( int currentHeight )
             nSECONDsPerHOUR = nSECONDsPerMINUTE * nMINUTEsPerHOUR;
             
         // really should get the block determined from height parameter currentHeight
-        // but chainActive.Height() & hashBestChain refer to the best block, I think!?
+        // but chainActive.Height() & chainActive.Tip()->blockHash refer to the best block, I think!?
 
         int
             nHeight = currentHeight;
 
         CBlockIndex
-            * pblockindex = mapBlockIndex[ hashBestChain ]; // hash of best block
+            * pblockindex = mapBlockIndex[ chainActive.Tip()->blockHash ]; // hash of best block
 
         while (pblockindex->nHeight > nHeight)              // in case we don't have the latest block
             pblockindex = pblockindex->pprev;               // I think??
@@ -1222,10 +1223,9 @@ void ExplorerPage::setNumBlocks( int currentHeight )
             QVector< QString > 
                 vStringBlockDataRow( BLOCK_VIEW_SIZE ); // our model behind the model
 
-            CBlock 
-                block;
-        
-            if( block.ReadFromDisk(pblockindex, true) ) // true means read Tx's, false means don't
+            CBlock block;
+            const Consensus::Params& consensusParams = Params().GetConsensus();
+            if( ReadBlockFromDisk(block, pblockindex, consensusParams) ) // true means read Tx's, false means don't
             {
                 // now we have the best "block" and its "pblockindex"
     
@@ -1349,7 +1349,8 @@ void ExplorerPage::setNumBlocks( int currentHeight )
                                         hash = pblockindex->GetBlockHeader().GetHash();
     
                                     pblockindex = mapBlockIndex[ hash ];
-                                    block.ReadFromDisk(pblockindex, false); // true means read Tx's
+                                    const Consensus::Params& consensusParams = Params().GetConsensus();
+                                    ReadBlockFromDisk(block, pblockindex, consensusParams);
     
                                     int64_t
                                         nTimeOfBlock = pblockindex->GetBlockTime(),
@@ -1987,10 +1988,9 @@ std::string BuildBlockinfoDetailsFrom(
     }
     //_________________________________________________________________________
 
-    bool
-        fTop = (NULL == pblockindex->pnext)? true: false;
+    CBlockIndex *pnext = chainActive.Next(pblockindex);
 
-    if( !fTop ) // there is a next block
+    if( pnext ) // there is a next block
     {
         sStandardItemModelElement = "next block";
         sTemp += "<b >" + sStandardItemModelElement + "</b >";
@@ -1998,7 +1998,7 @@ std::string BuildBlockinfoDetailsFrom(
                             pQSIMblockinfo->index( nRowCount, BLOCK_INFO_ITEM, QModelIndex() ),
                             sStandardItemModelElement.c_str()
                                );
-        sStandardItemModelElement = pblockindex->pnext->GetBlockHash().ToString();
+        sStandardItemModelElement = pnext->GetBlockHash().ToString();
         sTemp += sStandardItemModelElement + "<br />\n";
         pQSIMblockinfo->setData( 
                             pQSIMblockinfo->index( nRowCount, BLOCK_INFO_VALUE, QModelIndex() ),
@@ -2033,7 +2033,7 @@ std::string BuildBlockinfoDetailsFrom(
                            );
     sStandardItemModelElement = strprintf(
                         " (%-6d)"
-                        , pblockindex->nBlockPos
+                        , pblockindex->nDataPos
                                          );
     sTemp += sStandardItemModelElement + "<br />\n";
     pQSIMblockinfo->setData( 
@@ -2607,13 +2607,10 @@ std::string BuildBlockinfoDetailsFrom(
 void BlockExplorerPage::fillBlockInfoPage( int currentHeight )
 {
     CBlockIndex
-        * pblockindex = mapBlockIndex[hashBestChain];
+        * pblockindex = mapBlockIndex[chainActive.Tip()->blockHash];
 
     while (pblockindex->nHeight > currentHeight)
         pblockindex = pblockindex->pprev;
-
-    bool
-        fTop = (NULL == pblockindex->pnext)? true: false;
 
     uint256 
       //hash = pblockindex->GetHash();
@@ -2621,10 +2618,9 @@ void BlockExplorerPage::fillBlockInfoPage( int currentHeight )
 
     pblockindex = mapBlockIndex[ hash ];  // isn't this for Tx's and not blocks?
     
-    CBlock 
-        block;
-
-    block.ReadFromDisk( pblockindex, true );
+    CBlock block;
+    const Consensus::Params& consensusParams = Params().GetConsensus();
+    ReadBlockFromDisk(block, pblockindex, consensusParams);
 
     CMerkleTx 
         txGen( block.vtx[ 0 ] );    // fixed it!!! Code that is inside read JSON!!!!!
@@ -2897,7 +2893,7 @@ CLastTxHash::CLastTxHash( )
 //_____________________________________________________________________________
 //
 //_____________________________________________________________________________
-void CLastTxHash::storeLasthash( uint256 &hash )
+void CLastTxHash::storeLasthash(const uint256 &hash)
 {
     lastHash = hash;
     if( 0 == --explorer_counter )

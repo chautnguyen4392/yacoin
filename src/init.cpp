@@ -1,28 +1,31 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2012 The Bitcoin developers
-// Distributed under the MIT/X11 software license, see the accompanying
+// Copyright (c) 2009-2016 The Bitcoin Core developers
+// Copyright (c) 2017-2025 The Yacoin Core developers
+// Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
-#ifdef _MSC_VER
-    #include <stdint.h>
+#include "init.h"
 
-    #include <stdio.h>
-    #include "msvc_warnings.push.h"
-#else
-    #ifndef BITCOIN_UTIL_H
-        #include "util.h"
-    #endif
-#endif
+#include "chain.h"
+#include "chainparams.h"
+#include "consensus/validation.h"
+#include "fs.h"
+#include "validation.h"
+#include "net_processing.h"
+#include "policy/policy.h"
+#include "scheduler.h"
+#include "txdb.h"
+#include "torcontrol.h"
+#include "util.h"
+#include "validationinterface.h"
 
-#ifndef BITCOIN_TXDB_H
- #include "txdb-leveldb.h"
-#endif
+#include "bitcoinrpc.h"
+#include "random.h"
 
-#ifndef _BITCOINRPC_H_
- #include "bitcoinrpc.h"
-#endif
-
-#ifndef BITCOIN_INIT_H
- #include "init.h"
+#include <stdint.h>
+#include <stdio.h>
+#include <memory>
+#ifndef WIN32
+#include <signal.h>
 #endif
 
 #include <boost/format.hpp>
@@ -33,19 +36,9 @@
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/thread.hpp>
 #include <openssl/crypto.h>
-#include "random.h"
-
-#ifndef WIN32
-#include <signal.h>
-#endif
-#include "scheduler.h"
-#include "validationinterface.h"
-#include "torcontrol.h"
-#include "net_processing.h"
 
 static const bool DEFAULT_PROXYRANDOMIZE = true;
-::int64_t
-    nUpTimeStart = 0;
+::int64_t nUpTimeStart = 0;
 bool fNewerOpenSSL = false; // for key.cpp's benefit
 static const ::uint32_t mainnetNewLogicBlockNumber = 1890000;
 static const ::uint32_t testnetNewLogicBlockNumber = 0;
@@ -61,20 +54,10 @@ CWallet* pwalletMain;
 CClientUIInterface uiInterface;
 std::string strWalletFileName;
 bool fConfChange;
-unsigned int nNodeLifespan;
-unsigned int nMinerSleep;
-bool fUseFastIndex;
-bool fStoreBlockHashToDb;
-bool fReindexOnlyHeaderSync;
-bool fReindexBlockIndex;
-bool fReindexToken;
 bool fUseFastStakeMiner;
 bool fUseMemoryLog;
-enum Checkpoints::CPMode CheckpointsMode;
 
-// Ping and address broadcast intervals
-extern ::int64_t nPingInterval;
-extern ::int64_t nBroadcastInterval;
+static const bool DEFAULT_STOPAFTERBLOCKIMPORT = false;
 
 std::unique_ptr<CConnman> g_connman;
 std::unique_ptr<PeerLogicValidation> peerLogic;
@@ -92,6 +75,30 @@ std::unique_ptr<PeerLogicValidation> peerLogic;
 //
 // Shutdown
 //
+
+//
+// Thread management and startup/shutdown:
+//
+// The network-processing threads are all part of a thread group
+// created by AppInit() or the Qt main() function.
+//
+// A clean exit happens when StartShutdown() or the SIGTERM
+// signal handler sets fRequestShutdown, which triggers
+// the DetectShutdownThread(), which interrupts the main thread group.
+// DetectShutdownThread() then exits, which causes AppInit() to
+// continue (it .joins the shutdown thread).
+// Shutdown() is then
+// called to clean up database connections, and stop other
+// threads that should only be stopped after the main network-processing
+// threads have exited.
+//
+// Shutdown for Qt is very similar, only it uses a QTimer to detect
+// fRequestShutdown getting set, and then does the normal Qt
+// shutdown thing.
+//
+
+std::atomic<bool> fRequestShutdown(false);
+std::atomic<bool> fDumpMempoolLater(false);
 
 void ExitTimeout(void* parg)
 {
@@ -113,6 +120,33 @@ bool ShutdownRequested()
 {
     return fRequestShutdown;
 }
+
+/**
+ * This is a minimally invasive approach to shutdown on LevelDB read errors from the
+ * chainstate, while keeping user interface out of the common library, which is shared
+ * between bitcoind, and bitcoin-qt and non-server tools.
+*/
+class CCoinsViewErrorCatcher : public CCoinsViewBacked
+{
+public:
+    CCoinsViewErrorCatcher(CCoinsView* view) : CCoinsViewBacked(view) {}
+    bool GetCoin(const COutPoint &outpoint, Coin &coin) const override {
+        try {
+            return CCoinsViewBacked::GetCoin(outpoint, coin);
+        } catch(const std::runtime_error& e) {
+            uiInterface.ThreadSafeMessageBox(_("Error reading from database, shutting down."), "", CClientUIInterface::MSG_ERROR);
+            LogPrintf("Error reading from database: %s\n", e.what());
+            // Starting the shutdown sequence and returning false to the caller would be
+            // interpreted as 'entry not found' (as opposed to unable to read data), and
+            // could lead to invalid interpretation. Just exit immediately, as we can't
+            // continue anyway, and all writes should be atomic.
+            abort();
+        }
+    }
+    // Writes do not need similar protection, as failure to write is handled by the caller.
+};
+
+static CCoinsViewErrorCatcher *pcoinscatcher = nullptr;
 
 void WaitForShutdown(boost::thread_group* threadGroup)
 {
@@ -138,7 +172,7 @@ void Interrupt(boost::thread_group& threadGroup)
     threadGroup.interrupt_all();
 }
 
-void Shutdown(void* parg)
+void Shutdown()
 {
     LogPrintf("%s: In progress...\n", __func__);
     static CCriticalSection cs_Shutdown;
@@ -165,7 +199,41 @@ void Shutdown(void* parg)
     if(g_connman) g_connman->Stop();
     peerLogic.reset();
     g_connman.reset();
+
     StopTorControl();
+    if (fDumpMempoolLater && gArgs.GetArg("-persistmempool", DEFAULT_PERSIST_MEMPOOL)) {
+        DumpMempool();
+    }
+
+    // FlushStateToDisk generates a SetBestChain callback, which we should avoid missing
+    if (pcoinsTip != nullptr) {
+        FlushStateToDisk();
+    }
+
+    // After there are no more peers/RPC left to give us new data which may generate
+    // CValidationInterface callbacks, flush them...
+    GetMainSignals().FlushBackgroundCallbacks();
+
+    // Any future callbacks will be dropped. This should absolutely be safe - if
+    // missing a callback results in an unrecoverable situation, unclean shutdown
+    // would too. The only reason to do the above flushes is to let the wallet catch
+    // up with our current chain to avoid any strange pruning edge cases and make
+    // next startup faster by avoiding rescan.
+
+    {
+        LOCK(cs_main);
+        if (pcoinsTip != nullptr) {
+            FlushStateToDisk();
+        }
+        delete pcoinsTip;
+        pcoinsTip = nullptr;
+        delete pcoinscatcher;
+        pcoinscatcher = nullptr;
+        delete pcoinsdbview;
+        pcoinsdbview = nullptr;
+        delete pblocktree;
+        pblocktree = nullptr;
+    }
 
     {
         LOCK(cs_main);
@@ -174,12 +242,15 @@ void Shutdown(void* parg)
     }
     bitdb.Flush(true);
 
-#if !defined(WIN32) && !defined(QT_GUI)
-    if (fDaemon)
-    {
-        boost::filesystem::remove(GetPidFile());
+#ifndef WIN32
+    try {
+        fs::remove(GetPidFile());
+    } catch (const fs::filesystem_error& e) {
+        LogPrintf("%s: Unable to remove pidfile: %s\n", __func__, e.what());
     }
 #endif
+    UnregisterAllValidationInterfaces();
+    GetMainSignals().UnregisterBackgroundSignalScheduler();
     CloseWallets();
     LogPrintf("wallet unregistered\n");
     LogPrintf("Yacoin exited\n\n");
@@ -243,6 +314,16 @@ void HandleSIGHUP(int)
 {
     fReopenDebugLog = true;
 }
+#ifndef WIN32
+static void registerSignalHandler(int signal, void(*handler)(int))
+{
+    struct sigaction sa;
+    sa.sa_handler = handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(signal, &sa, nullptr);
+}
+#endif
 
 bool static InitError(const std::string &str)
 {
@@ -294,9 +375,10 @@ std::string HelpMessage()
     strUsage += HelpMessageOpt("-loadblock=<file>", _("Imports blocks from external blk000??.dat file on startup"));
     strUsage += HelpMessageOpt("-maxorphantx=<n>", strprintf(_("Keep at most <n> unconnectable transactions in memory (default: %u)"), DEFAULT_MAX_ORPHAN_TRANSACTIONS));
     strUsage += HelpMessageOpt("-par=<n>", _("Set the number of script verification threads (1-16, 0=auto, default: 0)"));
-    strUsage += HelpMessageOpt("-reindex-onlyheadersync", _("Upgrade block index to have new field `nstatus`, it just takes a few minutes"));
-    strUsage += HelpMessageOpt("-reindex-blockindex", _("Rebuild block index and transaction index from the blk*.dat files on disk, it takes very long time (around 24->48 hours)"));
-    strUsage += HelpMessageOpt("-reindex-token", _("Rebuild token index from the blk*.dat files on disk, it takes around 6->9 hours"));
+    strUsage += HelpMessageOpt("-reindex-fast", _("Rebuild chain state and block index from the blk*.dat files on disk without recalculating block hash"));
+    strUsage += HelpMessageOpt("-reindex", _("Rebuild chain state and block index from the blk*.dat files on disk"));
+    strUsage += HelpMessageOpt("-txindex", strprintf(_("Maintain a full transaction index, used by the getrawtransaction rpc call (default: %u)"), DEFAULT_TXINDEX));
+    strUsage += HelpMessageOpt("-blockhashindex", strprintf(_("Maintain a block hash index, used to avoid recalculating block hash when reading block data from disk (default: %u)"), DEFAULT_BLOCKHASHINDEX));
 
     strUsage += HelpMessageGroup(_("Connection options:"));
     strUsage += HelpMessageOpt("-addnode=<ip>", _("Add a node to connect to and attempt to keep the connection open"));
@@ -339,7 +421,6 @@ std::string HelpMessage()
     strUsage += HelpMessageGroup(_("Wallet options:"));
     strUsage += HelpMessageOpt("-keypool=<n>", strprintf(_("Set key pool size to <n> (default: %u)"), DEFAULT_KEYPOOL_SIZE));
     strUsage += HelpMessageOpt("-paytxfee=<amt>", _("Fee per KB to add to transactions you send"));
-    strUsage += HelpMessageOpt("-mininput=<amt>", strprintf(_("When creating transactions, ignore inputs with value less than this (default: %s)"), FormatMoney(MIN_TXOUT_AMOUNT)));
     strUsage += HelpMessageOpt("-rescan", _("Rescan the block chain for missing wallet transactions on startup"));
     strUsage += HelpMessageOpt("-salvagewallet", _("Attempt to recover private keys from a corrupt wallet on startup"));
     strUsage += HelpMessageOpt("-upgradewallet", _("Upgrade wallet to latest format on startup"));
@@ -377,7 +458,6 @@ std::string HelpMessage()
     strUsage += HelpMessageGroup(_("Other options:"));
     strUsage += HelpMessageOpt("-tokenindex", _("Keep an index of tokens. Requires a -reindex-token."));
     strUsage += HelpMessageOpt("-addressindex", _("Maintain a full address index, used to query for the balance, txids and unspent outputs for addresses. Require a -reindex-token or -reindex-blockindex"));
-    strUsage += HelpMessageOpt("-cppolicy", _("Sync checkpoints policy (default: strict)"));
     strUsage += HelpMessageOpt("-initSyncDownloadTimeout=<n>", _("Headers/block download timeout in seconds (default: 600)"));
     strUsage += HelpMessageOpt("-initSyncMaximumBlocksInDownloadPerPeer=<n>", _("Maximum number of blocks being downloaded at a time from one peer (default: 500)"));
     strUsage += HelpMessageOpt("-initSyncBlockDownloadWindow=<n>", _("Block download windows (default: initSyncMaximumBlocksInDownloadPerPeer * 64)"));
@@ -427,6 +507,18 @@ ServiceFlags nLocalServices = NODE_NETWORK;
 
 bool AppInitParameterInteraction()
 {
+    const CChainParams& chainparams = Params();
+    // ********************************************************* Step 2: parameter interactions
+
+    // also see: InitParameterInteraction()
+
+    // if using block pruning, then disallow txindex
+    // TODO: Implement prune later
+//    if (gArgs.GetArg("-prune", 0)) {
+//        if (gArgs.GetBoolArg("-txindex", DEFAULT_TXINDEX))
+//            return InitError(_("Prune mode is incompatible with -txindex."));
+//    }
+
     // -bind and -whitebind can't be set when not listening
     size_t nUserBind = gArgs.GetArgs("-bind").size() + gArgs.GetArgs("-whitebind").size();
     if (nUserBind != 0 && !gArgs.GetBoolArg("-listen", DEFAULT_LISTEN)) {
@@ -448,99 +540,171 @@ bool AppInitParameterInteraction()
     if (nMaxConnections < nUserMaxConnections)
         InitWarning(strprintf(_("Reducing -maxconnections from %d to %d, because of system limitations."), nUserMaxConnections, nMaxConnections));
 
-    nNodeLifespan = (unsigned int)(gArgs.GetArg("-addrlifespan", 7));
-    fUseFastIndex = gArgs.GetBoolArg("-fastindex", true);
-    fStoreBlockHashToDb = gArgs.GetBoolArg("-storeblockhash", true);
-    fUseMemoryLog = gArgs.GetBoolArg("-memorylog", true);
-    // YAC_TOKEN START
-    fTokenIndex = gArgs.GetBoolArg("-tokenindex", false);
-    fAddressIndex = gArgs.GetBoolArg("-addressindex", false);
-    // YAC_TOKEN END
-    nMinerSleep = (unsigned int)(gArgs.GetArg("-minersleep", nOneHundredMilliseconds));
+    // ********************************************************* Step 3: parameter-to-internal-flags
+    // Old logic
+    fDebug = gArgs.GetBoolArg("-debug");
 
-    HEADERS_DOWNLOAD_TIMEOUT_BASE = gArgs.GetArg("-initSyncDownloadTimeout", 15 * 60) * 1000000;
-    BLOCK_DOWNLOAD_TIMEOUT_BASE = HEADERS_DOWNLOAD_TIMEOUT_BASE;
-    MAX_BLOCKS_IN_TRANSIT_PER_PEER = gArgs.GetArg("-initSyncMaximumBlocksInDownloadPerPeer", 500);
-    BLOCK_DOWNLOAD_WINDOW = gArgs.GetArg("-initSyncBlockDownloadWindow", MAX_BLOCKS_IN_TRANSIT_PER_PEER * 64);
-    HEADER_BLOCK_DIFFERENCES_TRIGGER_GETBLOCKS = gArgs.GetArg("-initSyncTriggerGetBlocks", 10000);
+    if (gArgs.IsArgSet("-debug")) {
+        // Special-case: if -debug=0/-nodebug is set, turn off debugging messages
+        const std::vector<std::string> categories = gArgs.GetArgs("-debug");
 
-    int maximumHashCalcThread = boost::thread::hardware_concurrency();
+        if (find(categories.begin(), categories.end(), std::string("0")) == categories.end()) {
+            for (const auto& cat : categories) {
+                uint32_t flag = 0;
+                if (!GetLogCategory(&flag, &cat)) {
+                    InitWarning(strprintf(_("Unsupported logging category %s=%s."), "-debug", cat));
+                    continue;
+                }
+                logCategories |= flag;
+            }
+        }
+    }
+
+    // Now remove the logging categories which were explicitly excluded
+    for (const std::string& cat : gArgs.GetArgs("-debugexclude")) {
+        uint32_t flag = 0;
+        if (!GetLogCategory(&flag, &cat)) {
+            InitWarning(strprintf(_("Unsupported logging category %s=%s."), "-debugexclude", cat));
+            continue;
+        }
+        logCategories &= ~flag;
+    }
+
+    // Check for -debugnet
+    if (gArgs.GetBoolArg("-debugnet", false))
+        InitWarning(_("Unsupported argument -debugnet ignored, use -debug=net."));
+    // Check for -socks - as this is a privacy risk to continue, exit here
+    if (gArgs.IsArgSet("-socks"))
+        return InitError(_("Unsupported argument -socks found. Setting SOCKS version isn't possible anymore, only SOCKS5 proxies are supported."));
+    // Check for -tor - as this is a privacy risk to continue, exit here
+    if (gArgs.GetBoolArg("-tor", false))
+        return InitError(_("Unsupported argument -tor found, use -onion."));
+
+    if (gArgs.GetBoolArg("-benchmark", false))
+        InitWarning(_("Unsupported argument -benchmark ignored, use -debug=bench."));
+
+    // Checkmempool and checkblockindex default to true in regtest mode
+    // TODO: Support mempool frequency check
+//    int ratio = std::min<int>(std::max<int>(gArgs.GetArg("-checkmempool", chainparams.DefaultConsistencyChecks() ? 1 : 0), 0), 1000000);
+//    if (ratio != 0) {
+//        mempool.setSanityCheck(1.0 / ratio);
+//    }
+
+    fCheckBlockIndex = gArgs.GetBoolArg("-checkblockindex", chainparams.DefaultConsistencyChecks());
+    fCheckpointsEnabled = gArgs.GetBoolArg("-checkpoints", DEFAULT_CHECKPOINTS_ENABLED);
+
+    // TODO: Improve checkpoints logic
+//    hashAssumeValid = uint256S(gArgs.GetArg("-assumevalid", chainparams.GetConsensus().defaultAssumeValid.GetHex()));
+//    if (!hashAssumeValid.IsNull())
+//        LogPrintf("Assuming ancestors of block %s have valid signatures.\n", hashAssumeValid.GetHex());
+//    else
+//        LogPrintf("Validating signatures for all blocks.\n");
+
+    // TODO: Support nMinimumChainWork later
+//    if (gArgs.IsArgSet("-minimumchainwork")) {
+//        const std::string minChainWorkStr = gArgs.GetArg("-minimumchainwork", "");
+//        if (!IsHexNumber(minChainWorkStr)) {
+//            return InitError(strprintf("Invalid non-hex (%s) minimum chain work value specified", minChainWorkStr));
+//        }
+//        nMinimumChainWork = UintToArith256(uint256S(minChainWorkStr));
+//    } else {
+//        nMinimumChainWork = UintToArith256(chainparams.GetConsensus().nMinimumChainWork);
+//    }
+//    LogPrintf("Setting nMinimumChainWork=%s\n", nMinimumChainWork.GetHex());
+//    if (nMinimumChainWork < UintToArith256(chainparams.GetConsensus().nMinimumChainWork)) {
+//        LogPrintf("Warning: nMinimumChainWork set below default value of %s\n", chainparams.GetConsensus().nMinimumChainWork.GetHex());
+//    }
+
+    // mempool limits
+    // TODO: Improve the mempool memory usage check
+//    int64_t nMempoolSizeMax = gArgs.GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE) * 1000000;
+//    int64_t nMempoolSizeMin = gArgs.GetArg("-limitdescendantsize", DEFAULT_DESCENDANT_SIZE_LIMIT) * 1000 * 40;
+//    if (nMempoolSizeMax < 0 || nMempoolSizeMax < nMempoolSizeMin)
+//        return InitError(strprintf(_("-maxmempool must be at least %d MB"), std::ceil(nMempoolSizeMin / 1000000.0)));
+
+    // -par=0 means autodetect, but nScriptCheckThreads==0 means no concurrency
+    nScriptCheckThreads = (int)(gArgs.GetArg("-par", 0));
+    if (nScriptCheckThreads == 0)
+        nScriptCheckThreads = GetNumCores();
+    if (nScriptCheckThreads <= 1)
+        nScriptCheckThreads = 0;
+    else if (nScriptCheckThreads > MAX_SCRIPTCHECK_THREADS)
+        nScriptCheckThreads = MAX_SCRIPTCHECK_THREADS;
+
+    // Parallel calculate scrypt hash for block header
+    int maximumHashCalcThread = GetNumCores();
     nHashCalcThreads = (int)(gArgs.GetArg("-hashcalcthreads", maximumHashCalcThread - 1));
     if (nHashCalcThreads <= 0)
         nHashCalcThreads = 1;
     else if (nHashCalcThreads > maximumHashCalcThread)
         nHashCalcThreads = maximumHashCalcThread;
 
-    // Ping and address broadcast intervals
-    nPingInterval = max< ::int64_t>(10, gArgs.GetArg("-keepalive", 10 * 60));
-    nBroadcastInterval = max< ::int64_t>(6 * 60 * 60, gArgs.GetArg("-addrsetlifetime", 24 * 60 * 60));
+    // block pruning; get the amount of disk space (in MiB) to allot for block & undo files
+    // TODO: Implement prune later
+//    int64_t nPruneArg = gArgs.GetArg("-prune", 0);
+//    if (nPruneArg < 0) {
+//        return InitError(_("Prune cannot be configured with a negative value."));
+//    }
+//    nPruneTarget = (uint64_t) nPruneArg * 1024 * 1024;
+//    if (nPruneArg == 1) {  // manual pruning: -prune=1
+//        LogPrintf("Block pruning enabled.  Use RPC call pruneblockchain(height) to manually prune block and undo files.\n");
+//        nPruneTarget = std::numeric_limits<uint64_t>::max();
+//        fPruneMode = true;
+//    } else if (nPruneTarget) {
+//        if (nPruneTarget < MIN_DISK_SPACE_FOR_BLOCK_FILES) {
+//            return InitError(strprintf(_("Prune configured below the minimum of %d MiB.  Please use a higher number."), MIN_DISK_SPACE_FOR_BLOCK_FILES / 1024 / 1024));
+//        }
+//        LogPrintf("Prune configured to target %uMiB on disk for block and undo files.\n", nPruneTarget / 1024 / 1024);
+//        fPruneMode = true;
+//    }
 
-    CheckpointsMode = Checkpoints::STRICT_;
-    std::string strCpMode = gArgs.GetArg("-cppolicy", "strict");
+    nConnectTimeout = gArgs.GetArg("-timeout", DEFAULT_CONNECT_TIMEOUT);
+    if (nConnectTimeout <= 0)
+        nConnectTimeout = DEFAULT_CONNECT_TIMEOUT;
 
-    if(strCpMode == "strict") {
-        CheckpointsMode = Checkpoints::STRICT_;
-    }
+    fRequireStandard = !gArgs.GetBoolArg("-acceptnonstdtxn", !chainparams.RequireStandard());
+    if (chainparams.RequireStandard() && !fRequireStandard)
+        return InitError(strprintf("acceptnonstdtxn is not currently supported for %s chain", chainparams.NetworkIDString()));
 
-    if(strCpMode == "advisory") {
-        CheckpointsMode = Checkpoints::ADVISORY;
-    }
+    // Option to startup with mocktime set (used for regression testing):
+    SetMockTime(gArgs.GetArg("-mocktime", 0)); // SetMockTime(0) is a no-op
 
-    if(strCpMode == "permissive") {
-        CheckpointsMode = Checkpoints::PERMISSIVE;
-    }
+    nMaxTipAge = gArgs.GetArg("-maxtipage", DEFAULT_MAX_TIP_AGE);
+
+    // yac: blockhashindex is necessary to avoid recalculating block hash (very slow !!!) when reading block data from disk
+    fBlockHashIndex = gArgs.GetBoolArg("-blockhashindex", DEFAULT_BLOCKHASHINDEX);
+
+    fUseMemoryLog = gArgs.GetBoolArg("-memorylog", true);
+
+    // Headers-first parameters
+    HEADERS_DOWNLOAD_TIMEOUT_BASE = gArgs.GetArg("-initSyncDownloadTimeout", 15 * 60) * 1000000;
+    BLOCK_DOWNLOAD_TIMEOUT_BASE = HEADERS_DOWNLOAD_TIMEOUT_BASE;
+    MAX_BLOCKS_IN_TRANSIT_PER_PEER = gArgs.GetArg("-initSyncMaximumBlocksInDownloadPerPeer", 500);
+    BLOCK_DOWNLOAD_WINDOW = gArgs.GetArg("-initSyncBlockDownloadWindow", MAX_BLOCKS_IN_TRANSIT_PER_PEER * 64);
+    HEADER_BLOCK_DIFFERENCES_TRIGGER_GETBLOCKS = gArgs.GetArg("-initSyncTriggerGetBlocks", 10000);
 
     // Good that testnet is tested here, but closer to AppInit() => ReadConfigFile() would be better
+    // Old logic
     fTestNet = gArgs.GetBoolArg("-testnet");
-
-    // -par=0 means autodetect, but nScriptCheckThreads==0 means no concurrency
-    nScriptCheckThreads = (int)(gArgs.GetArg("-par", 0));
-    if (nScriptCheckThreads == 0)
-        nScriptCheckThreads = boost::thread::hardware_concurrency();
-    if (nScriptCheckThreads <= 1)
-        nScriptCheckThreads = 0;
-    else if (nScriptCheckThreads > MAX_SCRIPTCHECK_THREADS)
-        nScriptCheckThreads = MAX_SCRIPTCHECK_THREADS;
-
-    fDebug = gArgs.GetBoolArg("-debug");
-
-    // -debug implies fDebug*
-    if (fDebug)
-        fDebugNet = true;
-    else
-        fDebugNet = gArgs.GetBoolArg("-debugnet");
-
     bitdb.SetDetach(gArgs.GetBoolArg("-detachdb", false));
 
-#if !defined(WIN32) && !defined(QT_GUI)
-    fDaemon = gArgs.GetBoolArg("-daemon");
-#else
-    fDaemon = false;
-#endif
+    fDaemon = gArgs.GetBoolArg("-daemon", false);
 
     if (fDaemon)
         fServer = true;
     else
         fServer = gArgs.GetBoolArg("-server");
 
-    /* force fServer when running without GUI */
-#if !defined(QT_GUI)
-    fServer = true;
-#endif
-
     nEpochInterval = (::uint32_t)(gArgs.GetArg("-epochinterval", 21000));
     nDifficultyInterval = nEpochInterval;
-
-    nConnectTimeout = gArgs.GetArg("-timeout", DEFAULT_CONNECT_TIMEOUT);
-    if (nConnectTimeout <= 0)
-        nConnectTimeout = DEFAULT_CONNECT_TIMEOUT;
+    nFactorAtHardfork = gArgs.GetArg("-nFactorAtHardfork", 21);
+    LogPrintf("Param nEpochInterval = %d, nFactorAtHardfork = %d\n", nEpochInterval, nFactorAtHardfork);
 
     // Continue to put "/P2SH/" in the coinbase to monitor
     // BIP16 support.
     // This can be removed eventually...
     const char* pszP2SH = "/P2SH/";
     COINBASE_FLAGS << std::vector<unsigned char>(pszP2SH, pszP2SH+strlen(pszP2SH));
-
 
     if (gArgs.IsArgSet("-paytxfee"))
     {
@@ -551,11 +715,6 @@ bool AppInitParameterInteraction()
     }
 
     fConfChange = gArgs.GetBoolArg("-confchange", false);
-
-    if (!ParseMoney(gArgs.GetArg("-mininput", FormatMoney(MIN_TXOUT_AMOUNT)), nMinimumInputValue))
-        return InitError(strprintf(_("Invalid amount for -mininput=<amount>: '%s'"), gArgs.GetArg("-mininput", FormatMoney(MIN_TXOUT_AMOUNT))));
-
-    nMaxTipAge = gArgs.GetArg("-maxtipage", DEFAULT_MAX_TIP_AGE);
 
     return true;
 }
@@ -620,59 +779,57 @@ void InitParameterInteraction()
 
 void InitLogging()
 {
-#if !defined(QT_GUI)
-    fPrintToConsole = gArgs.GetBoolArg("-printtoconsole");
-#else
-    fPrintToConsole = false;
-#endif
-    fPrintToDebugLog = gArgs.GetBoolArg("-printtodebugger", true);
+    fPrintToConsole = gArgs.GetBoolArg("-printtoconsole", false);
     fLogTimestamps = gArgs.GetBoolArg("-logtimestamps", DEFAULT_LOGTIMESTAMPS);
     fLogTimeMicros = gArgs.GetBoolArg("-logtimemicros", DEFAULT_LOGTIMEMICROS);
     fLogIPs = gArgs.GetBoolArg("-logips", DEFAULT_LOGIPS);
-    LogPrintf("fPrintToConsole = %d, fPrintToDebugLog = %d\n", fPrintToConsole, fPrintToDebugLog);
+
+    LogPrintf("\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
+    LogPrintf("Yacoin version %s (%s)\n", FormatFullVersion(), CLIENT_DATE);
+}
+
+static bool LockDataDirectory(bool probeOnly)
+{
+    std::string strDataDir = GetDataDir().string();
+
+    // Make sure only a single Bitcoin process is using the data directory.
+    fs::path pathLockFile = GetDataDir() / ".lock";
+    FILE* file = fsbridge::fopen(pathLockFile, "a"); // empty lock file; created if it doesn't exist.
+    if (file) fclose(file);
+
+    try {
+        static boost::interprocess::file_lock lock(pathLockFile.string().c_str());
+        if (!lock.try_lock()) {
+            return InitError(strprintf(_("Cannot obtain a lock on data directory %s. %s is probably already running."), strDataDir, _(PACKAGE_NAME)));
+        }
+        if (probeOnly) {
+            lock.unlock();
+        }
+    } catch(const boost::interprocess::interprocess_exception& e) {
+        return InitError(strprintf(_("Cannot obtain a lock on data directory %s. %s is probably already running.") + " %s.", strDataDir, _(PACKAGE_NAME), e.what()));
+    }
+    return true;
+}
+
+bool AppInitSanityChecks()
+{
+    // ********************************************************* Step 4: sanity checks
+
+    // Probe the data directory lock to give an early error message, if possible
+    // We cannot hold the data directory lock here, as the forking for daemon() hasn't yet happened,
+    // and a fork will cause weird behavior to it.
+    return LockDataDirectory(true);
 }
 
 bool AppInitLockDataDirectory()
 {
-    std::string // note fTestNet has been set and finally we 'discover' the 'data directory'!
-        strDataDir = GetDataDir().string();
-
-    strWalletFileName = gArgs.GetArg("-wallet", "wallet.dat");
-
-    // strWalletFileName must be a plain filename without a directory
-    if (
-        strWalletFileName !=
-        boost::filesystem::basename(strWalletFileName) +
-        boost::filesystem::extension(strWalletFileName)
-       )
-        return InitError(
-                         strprintf(
-                            _("Wallet %s resides outside data directory %s."),
-                            strWalletFileName.c_str(),
-                            strDataDir.c_str()
-                                  )
-                        );
-
-    // Make sure only a single Bitcoin process is using the data directory.
-    boost::filesystem::path
-        pathLockFile = GetDataDir() / ".lock";
-
-    FILE
-        * file = fopen(pathLockFile.string().c_str(), "a"); // empty lock file; created if it doesn't exist.
-
-    if (file)
-        fclose(file);
-
-    static boost::interprocess::file_lock
-        lock(pathLockFile.string().c_str());
-
-    if (!lock.try_lock())
-        return InitError(
-                         strprintf(
-                            _("Cannot obtain a lock on data directory %s.  Yacoin is probably already running."),
-                            strDataDir.c_str()
-                                  )
-                        );
+    // After daemonization get the data directory lock again and hold on to it until exit
+    // This creates a slight window for a race condition to happen, however this condition is harmless: it
+    // will at most make us exit without printing a message to console.
+    if (!LockDataDirectory(false)) {
+        // Detailed error printed inside LockDataDirectory
+        return false;
+    }
     return true;
 }
 
@@ -681,71 +838,50 @@ bool AppInitLockDataDirectory()
 /** Initialize bitcoin.
  *  @pre Parameters should be parsed and config file should be read.
  */
-bool AppInit2(boost::thread_group& threadGroup, CScheduler& scheduler)
+bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
 {
-    // ********************************************************* Step 4: application initialization: dir lock, daemonize, pidfile, debug log
+    const CChainParams& chainparams = Params();
+    // ********************************************************* Step 4a: application initialization: dir lock, daemonize, pidfile, debug log
+#ifndef WIN32
+    CreatePidFile(GetPidFile(), getpid());
+#endif
 
-    std::string // note fTestNet has been set and finally we 'discover' the 'data directory'!
-        strDataDir = GetDataDir().string();
-
-    strWalletFileName = gArgs.GetArg("-wallet", "wallet.dat");
-
-    if (gArgs.GetBoolArg("-shrinkdebugfile", !fDebug))
+//    if (gArgs.GetBoolArg("-shrinkdebugfile", !fDebug))
+//        ShrinkDebugFile();
+    if (gArgs.GetBoolArg("-shrinkdebugfile", logCategories == BCLog::NONE)) {
+        // Do this first since it both loads a bunch of debug.log into memory,
+        // and because this needs to happen before any other debug.log printing
         ShrinkDebugFile();
+    }
 
     if (fPrintToDebugLog)
         OpenDebugLog();
 
-    LogPrintf("\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
-    LogPrintf("Yacoin version %s (%s)\n", FormatFullVersion(), CLIENT_DATE);
-    LogPrintf("\n" );
+    if (!fLogTimestamps)
+        LogPrintf("Startup time: %s\n", DateTimeStrFormat("%Y-%m-%d %H:%M:%S", GetTime()));
 
-#if defined( USE_IPV6 )
-        LogPrintf( "USE_IPV6 is defined\n" );
-#endif
-#if defined( USE_ASM )
-        LogPrintf( "USE_ASM is defined\n" );
-#endif
-#if defined( USE_UPNP )
-        LogPrintf( "USE_UPNP is defined\n" );
-#endif
+    // strWalletFileName must be a plain filename without a directory
+    std::string strDataDir = GetDataDir().string();
+    strWalletFileName = gArgs.GetArg("-wallet", "wallet.dat");
+    if (strWalletFileName != boost::filesystem::basename(strWalletFileName) + boost::filesystem::extension(strWalletFileName))
+        return InitError(strprintf(_("Wallet %s resides outside data directory %s."), strWalletFileName.c_str(), strDataDir.c_str()));
+
+    LogPrintf("Default data directory %s\n", GetDefaultDataDir().string());
+    LogPrintf("Using data directory %s\n", GetDataDir().string());
+    LogPrintf("Using config file %s\n", GetConfigFile(gArgs.GetArg("-conf", YACOIN_CONF_FILENAME)).string());
+    LogPrintf("Using at most %i automatic connections (%i file descriptors available)\n", nMaxConnections, nFD);
     LogPrintf("Using Boost version %1d.%d.%d\n", BOOST_VERSION / 100000, (BOOST_VERSION / 100) % 1000, BOOST_VERSION % 100);
     LogPrintf("Boost is using the %s compiler\n", BOOST_COMPILER );
     LogPrintf("Boost is using the %s standard library\n", BOOST_STDLIB );
     LogPrintf("Boost is using the %s platform\n\n", BOOST_PLATFORM );
-
     LogPrintf("Using levelDB version %d.%d\n", leveldb::kMajorVersion, leveldb::kMinorVersion);
-    LogPrintf("\n");
-
-    int
-        nBdbMajor,
-        nBdbMinor,
-        nBdbPatch;
-
+    int nBdbMajor, nBdbMinor, nBdbPatch;
     (void)db_version( &nBdbMajor, &nBdbMinor, &nBdbPatch );
     LogPrintf("Using BerkeleyDB version %d.%d.%d\n\n", nBdbMajor, nBdbMinor, nBdbPatch);
     LogPrintf("Using OpenSSL version %s\n\n", SSLeay_version(SSLEAY_VERSION));
     LogPrintf("Wallet is %s\n", strDataDir + "/" + strWalletFileName);
 
-    unsigned int
-        nCutoffVersion = (unsigned int)((int)'j' - (int)'`'),
-        nV = SSLEAY_VERSION_NUMBER;
-    nV &= 0x000000f0;
-    nV >>= 4;
-    if( nV > nCutoffVersion )
-        fNewerOpenSSL = true;
-
-    if (!fLogTimestamps)
-        LogPrintf("Startup time: %s\n", DateTimeStrFormat("%x %H:%M:%S", GetTime()));
-    LogPrintf("The Default data directory is %s\n", GetDefaultDataDir().string());
-    LogPrintf("Using data directory %s\n", strDataDir);
-    std::ostringstream 
-        strErrors;
-
-    if (fDaemon)
-        fprintf(stdout, "Yacoin server starting\n");
-
-    if (nScriptCheckThreads) 
+    if (nScriptCheckThreads)
     {
         LogPrintf("Using %u threads for script verification\n", nScriptCheckThreads);
         for (int i=0; i<nScriptCheckThreads-1; ++i)
@@ -765,10 +901,25 @@ bool AppInit2(boost::thread_group& threadGroup, CScheduler& scheduler)
 
     GetMainSignals().RegisterBackgroundSignalScheduler(scheduler);
 
+    if (fDaemon)
+        fprintf(stdout, "Yacoin server starting\n");
+
+#if defined( USE_UPNP )
+        LogPrintf( "USE_UPNP is defined\n" );
+#endif
+
+    unsigned int nCutoffVersion = (unsigned int)((int)'j' - (int)'`');
+    unsigned int nV = SSLEAY_VERSION_NUMBER;
+    nV &= 0x000000f0;
+    nV >>= 4;
+    if( nV > nCutoffVersion )
+        fNewerOpenSSL = true;
+
+    std::ostringstream strErrors;
     ::int64_t nStart;
 
-    // ********************************************************* Step 5: verify database integrity
-
+    // ********************************************************* Step 5: verify wallet database integrity
+    // TODO: Improve wallet logic
     uiInterface.InitMessage(_("<b>Verifying database integrity...</b>"));
 
     if (!bitdb.Open(GetDataDir()))
@@ -810,6 +961,7 @@ bool AppInit2(boost::thread_group& threadGroup, CScheduler& scheduler)
     assert(!g_connman);
     g_connman = std::unique_ptr<CConnman>(new CConnman(GetRand(std::numeric_limits<uint64_t>::max()), GetRand(std::numeric_limits<uint64_t>::max())));
     CConnman& connman = *g_connman;
+
     peerLogic.reset(new PeerLogicValidation(&connman, scheduler));
     RegisterValidationInterface(peerLogic.get());
 
@@ -825,44 +977,6 @@ bool AppInit2(boost::thread_group& threadGroup, CScheduler& scheduler)
         return InitError(strprintf(_("Total length of network version string (%i) exceeds maximum length (%i). Reduce the number or size of uacomments."),
             strSubVersion.size(), MAX_SUBVERSION_LENGTH));
     }
-
-    // Check for -socks - as this is a privacy risk to continue, exit here
-    if (gArgs.IsArgSet("-socks"))
-        return InitError(_("Unsupported argument -socks found. Setting SOCKS version isn't possible anymore, only SOCKS5 proxies are supported."));
-
-#ifdef WIN32
-    // Initialize Windows Sockets
-    WSADATA 
-        wsadata;
-
-    int 
-        ret = WSAStartup(MAKEWORD(2,2), &wsadata);
-
-    if (ret != NO_ERROR)
-    {
-        string
-            strError = strprintf(
-                                 "Error: TCP/IP socket library failed to start "
-                                 "(WSAStartup returned error %d)", 
-                                 ret
-                                );
-        LogPrintf("%s\n", strError);
-    }
-    if (
-        (2 != LOBYTE( wsadata.wVersion )) ||
-        (2 != HIBYTE( wsadata.wVersion ))
-       ) 
-    {
-    /* Tell the user that we could not find a usable */
-    /* WinSock DLL.                                  */
-    WSACleanup( );
-    string
-        strError = "Error: TCP/IP socket library isn't 2.2 or greater?";
-    LogPrintf("%s\n", strError);
-    return InitError(_("Error: TCP/IP socket library isn't 2.2 or greater?"));
-    }
-
-#endif
 
     if (gArgs.IsArgSet("-onlynet")) {
         std::set<enum Network> nets;
@@ -924,10 +1038,6 @@ bool AppInit2(boost::thread_group& threadGroup, CScheduler& scheduler)
         }
     }
 
-    // Check for -tor - as this is a privacy risk to continue, exit here
-    if (gArgs.GetBoolArg("-tor", false))
-        return InitError(_("Unsupported argument -tor found, use -onion."));
-
     // see Step 2: parameter interactions for more information about these
     fListen = gArgs.GetBoolArg("-listen", DEFAULT_LISTEN);
     fDiscover = gArgs.GetBoolArg("-discover", true);
@@ -955,24 +1065,296 @@ bool AppInit2(boost::thread_group& threadGroup, CScheduler& scheduler)
         nMaxOutboundLimit = gArgs.GetArg("-maxuploadtarget", DEFAULT_MAX_UPLOAD_TARGET)*1024*1024;
     }
 
-    if (gArgs.IsArgSet("-reservebalance")) // ppcoin: reserve balance amount
+    // ********************************************************* Step 7: load block chain
+
+    bool fReindexFast = gArgs.GetBoolArg("-reindex-fast", false);
+    fReindex = fReindexFast ? fReindexFast : gArgs.GetBoolArg("-reindex", false);
+    LogPrintf("Param fReindex = %d, fReindexFast = %d\n", fReindex, fReindexFast);
+
+    nMainnetNewLogicBlockNumber = gArgs.GetArg("-testnetNewLogicBlockNumber", mainnetNewLogicBlockNumber);
+    nTokenSupportBlockNumber = gArgs.GetArg("-tokenSupportBlockNumber", tokenSupportBlockNumber);
+    LogPrintf("Param nMainnetNewLogicBlockNumber = %d\n",nMainnetNewLogicBlockNumber);
+
+    // cache size calculations
+    int64_t nTotalCache = (gArgs.GetArg("-dbcache", nDefaultDbCache) << 20);
+    nTotalCache = std::max(nTotalCache, nMinDbCache << 20); // total cache cannot be less than nMinDbCache
+    nTotalCache = std::min(nTotalCache, nMaxDbCache << 20); // total cache cannot be greater than nMaxDbcache
+    int64_t nBlockTreeDBCache = nTotalCache / 8;
+    nBlockTreeDBCache = std::min(nBlockTreeDBCache, (gArgs.GetBoolArg("-txindex", DEFAULT_TXINDEX) ? nMaxBlockDBAndTxIndexCache : nMaxBlockDBCache) << 20);
+    nTotalCache -= nBlockTreeDBCache;
+    int64_t nCoinDBCache = std::min(nTotalCache / 2, (nTotalCache / 4) + (1 << 23)); // use 25%-50% of the remainder for disk cache
+    nCoinDBCache = std::min(nCoinDBCache, nMaxCoinsDBCache << 20); // cap total coins db cache
+    nTotalCache -= nCoinDBCache;
+    nCoinCacheUsage = nTotalCache; // the rest goes to in-memory cache
+//    int64_t nMempoolSizeMax = gArgs.GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE) * 1000000;
+    LogPrintf("Cache configuration:\n");
+    LogPrintf("* Using %.1fMiB for block index database\n", nBlockTreeDBCache * (1.0 / 1024 / 1024));
+    LogPrintf("* Using %.1fMiB for chain state database\n", nCoinDBCache * (1.0 / 1024 / 1024));
+    LogPrintf("* Using %.1fMiB for in-memory UTXO set\n", nCoinCacheUsage * (1.0 / 1024 / 1024));
+
+    // Upgrading to v1.5.0; hard-link the old blknnnn.dat files into /blocks/
+    filesystem::path blocksDir = GetDataDir() / "blocks";
+    if (!filesystem::exists(blocksDir))
     {
-        ::int64_t nReserveBalance = 0;
-        if (!ParseMoney(gArgs.GetArg("-reservebalance", ""), nReserveBalance))
+        filesystem::create_directories(blocksDir);
+        bool linked = false;
+        for (unsigned int i = 1; i < 10000; i++) {
+            filesystem::path source = GetDataDir() / strprintf("blk%04u.dat", i);
+            if (!filesystem::exists(source)) break;
+            filesystem::path dest = blocksDir / strprintf("blk%05u.dat", i-1);
+            try {
+                filesystem::create_hard_link(source, dest);
+                LogPrintf("Hardlinked %s -> %s\n", source.string(), dest.string());
+                linked = true;
+            } catch (filesystem::filesystem_error & e) {
+                // Note: hardlink creation failing is not a disaster, it just means
+                // blocks will get re-downloaded from peers.
+                LogPrintf("Error hardlinking blk%04u.dat : %s\n", i, e.what());
+                break;
+            }
+        }
+        if (linked)
         {
-            InitError(_("Invalid amount for -reservebalance=<amount>"));
-            return false;
+            // Store map hash when upgrading to v1.5.0 to speedup the process
+            CBlockTreeDB *pTempBlockTree = new CBlockTreeDB(nBlockTreeDBCache, false, false, false);
+            pTempBlockTree->BuildMapHashFromOldDB();
+            delete pTempBlockTree;
+            fReindexFast = true;
+            fReindex = true;
         }
     }
 
-    if (gArgs.IsArgSet("-checkpointkey")) // ppcoin: checkpoint master priv key
+    std::string additionalInfo = fReindexFast ? "(reindex block index and chainstate in fast mode)" : fReindex ? "(reindex block index and chainstate in slow mode)" : "";
+    LogPrintf("Loading block index %s ...\n", additionalInfo);
+    bool fLoaded = false;
+    while (!fLoaded && !fRequestShutdown)
     {
-        if (!Checkpoints::SetCheckpointPrivKey(gArgs.GetArg("-checkpointkey", "")))
-            InitError(_("Unable to sign checkpoint, wrong checkpointkey?\n"));
+        bool fReset = fReindex;
+        std::string strLoadError;
+
+        // YACOIN TODO ADD SPINNER OR PROGRESS BAR
+        uiInterface.InitMessage(_("<b>Loading block index, this may take several minutes...</b>"));
+
+        nStart = GetTimeMillis();
+        do
+        {
+            try
+            {
+                UnloadBlockIndex();
+
+                // Build map hash to avoid hash calculation and speed up the process
+                if (fReindexFast) {
+                    pblocktree = new CBlockTreeDB(nBlockTreeDBCache, false, false);
+                    pblocktree->BuildMapHash();
+                }
+
+                delete pcoinsTip;
+                delete pcoinsdbview;
+                delete pcoinscatcher;
+                delete pblocktree;
+                pblocktree = new CBlockTreeDB(nBlockTreeDBCache, false, fReset);
+
+                // Build block hash index to avoid hash calculation and speed up the process
+                if (fReindexFast) {
+                    pblocktree->BuildBlockHashIndex();
+                }
+
+                /** YAC_TOKEN START */
+                {
+                    // Basic tokens
+                    delete ptokens;
+                    delete ptokensdb;
+                    delete ptokensCache;
+
+                    // Basic tokens
+                    ptokensdb = new CTokensDB(nBlockTreeDBCache, false, fReset);
+                    ptokens = new CTokensCache();
+                    ptokensCache = new CLRUCache<std::string, CDatabasedTokenData>(MAX_CACHE_TOKENS_SIZE);
+
+                    // Read for fTokenIndex to make sure that we only load token address balances if it if true
+                    pblocktree->ReadFlag("tokenindex", fTokenIndex);
+
+                    // Need to load tokens before we verify the database
+                    if (!ptokensdb->LoadTokens()) {
+                        strLoadError = _("Failed to load Tokens Database");
+                        break;
+                    }
+
+                    if (!ptokensdb->ReadReissuedMempoolState())
+                        LogPrintf("Database failed to load last Reissued Mempool State. Will have to start from empty state\n");
+
+                    LogPrintf("Successfully loaded tokens from database.\nCache of tokens size: %d\n",
+                              ptokensCache->Size());
+                }
+                /** YAC_TOKEN END */
+
+                if (fReset) {
+                    pblocktree->WriteReindexing(true);
+                    //If we're reindexing in prune mode, wipe away unusable block files and all undo data files
+                    // TODO: Implement prune later
+//                    if (fPruneMode)
+//                        CleanupBlockRevFiles();
+                }
+
+                if (fRequestShutdown) break;
+
+                // LoadBlockIndex will load fTxIndex from the db, or set it if
+                // we're reindexing. It will also load fHavePruned if we've
+                // ever removed a block file from disk.
+                // Note that it also sets fReindex based on the disk flag!
+                // From here on out fReindex and fReset mean something different!
+                if (!LoadBlockIndex(chainparams)) {
+                    strLoadError = _("Error loading block database");
+                    break;
+                }
+
+                // If the loaded chain has a wrong genesis, bail out immediately
+                // (we're likely using a testnet datadir, or the other way around).
+                if (!mapBlockIndex.empty() && mapBlockIndex.count(chainparams.GetConsensus().hashGenesisBlock) == 0)
+                    return InitError(_("Incorrect or no genesis block found. Wrong datadir for network?"));
+
+                // Check for changed -txindex state
+                if (fTxIndex != gArgs.GetBoolArg("-txindex", DEFAULT_TXINDEX)) {
+                    strLoadError = _("You need to rebuild the database using -reindex-fast or -reindex to change -txindex");
+                    break;
+                }
+
+                // Check for changed -addressindex state
+                if (fAddressIndex != gArgs.GetBoolArg("-addressindex", DEFAULT_ADDRESSINDEX)) {
+                    strLoadError = _("You need to rebuild the database using -reindex-fast or -reindex to change -addressindex");
+                    break;
+                }
+
+                // Check for changed -prune state.  What we are concerned about is a user who has pruned blocks
+                // in the past, but is now trying to run unpruned.
+                // TODO: Implement prune later
+//                if (fHavePruned && !fPruneMode) {
+//                    strLoadError = _("You need to rebuild the database using -reindex to go back to unpruned mode.  This will redownload the entire blockchain");
+//                    break;
+//                }
+
+                // At this point blocktree args are consistent with what's on disk.
+                // If we're not mid-reindex (based on disk + args), add a genesis block on disk
+                // (otherwise we use the one already on disk).
+                // This is called again in ThreadImport after the reindex completes.
+                if (!fReindex && !LoadGenesisBlock(chainparams)) {
+                    strLoadError = _("Error initializing block database");
+                    break;
+                }
+
+                // At this point we're either in reindex or we've loaded a useful
+                // block tree into mapBlockIndex!
+                pcoinsdbview = new CCoinsViewDB(nCoinDBCache, false, fReset);
+                pcoinscatcher = new CCoinsViewErrorCatcher(pcoinsdbview);
+
+                // ReplayBlocks is a no-op if we cleared the coinsviewdb with -reindex-fast or -reindex
+                if (!ReplayBlocks(chainparams, pcoinsdbview)) {
+                    strLoadError = _("Unable to replay blocks. You will need to rebuild the database using -reindex-fast or -reindex.");
+                    break;
+                }
+
+                // The on-disk coinsdb is now in a good state, create the cache
+                pcoinsTip = new CCoinsViewCache(pcoinscatcher);
+
+                bool is_coinsview_empty = fReset || pcoinsTip->GetBestBlock().IsNull();
+                if (!is_coinsview_empty) {
+                    // LoadChainTip sets chainActive based on pcoinsTip's best block
+                    if (!LoadChainTip(chainparams)) {
+                        strLoadError = _("Error initializing block database");
+                        break;
+                    }
+                    assert(chainActive.Tip() != nullptr);
+                }
+
+                // yac: Load block reward and highest difficulty when starting node
+                LoadBlockRewardAndHighestDiff();
+
+                // yac: don't need this because yac doesn't support segwit
+//                if (!fReset) {
+//                    // Note that RewindBlockIndex MUST run even if we're about to -reindex-chainstate.
+//                    // It both disconnects blocks based on chainActive, and drops block data in
+//                    // mapBlockIndex based on lack of available witness data.
+//                    uiInterface.InitMessage(_("Rewinding blocks..."));
+//                    if (!RewindBlockIndex(chainparams)) {
+//                        strLoadError = _("Unable to rewind the database to a pre-fork state. You will need to redownload the blockchain");
+//                        break;
+//                    }
+//                }
+
+                if (!is_coinsview_empty) {
+                    uiInterface.InitMessage(_("Verifying blocks..."));
+                    // TODO: Implement prune later
+//                    if (fHavePruned && gArgs.GetArg("-checkblocks", DEFAULT_CHECKBLOCKS) > MIN_BLOCKS_TO_KEEP) {
+//                        LogPrintf("Prune: pruned datadir may not have more than %d blocks; only checking available blocks",
+//                            MIN_BLOCKS_TO_KEEP);
+//                    }
+
+                    {
+                        LOCK(cs_main);
+                        CBlockIndex* tip = chainActive.Tip();
+                        // TODO: Support new RPC Command-Line Interface
+//                        RPCNotifyBlockChange(true, tip);
+                        if (tip && tip->nTime > GetAdjustedTime() + 2 * 60 * 60) {
+                            strLoadError = _("The block database contains a block which appears to be from the future. "
+                                    "This may be due to your computer's date and time being set incorrectly. "
+                                    "Only rebuild the block database if you are sure that your computer's date and time are correct");
+                            break;
+                        }
+                    }
+
+                    if (!CVerifyDB().VerifyDB(chainparams, pcoinsdbview, gArgs.GetArg("-checklevel", DEFAULT_CHECKLEVEL),
+                                  gArgs.GetArg("-checkblocks", DEFAULT_CHECKBLOCKS))) {
+                        strLoadError = _("Corrupted block database detected");
+                        break;
+                    }
+                }
+            } catch (const std::exception& e) {
+                LogPrintf("%s\n", e.what());
+                strLoadError = _("Error opening block database");
+                break;
+            }
+
+            fLoaded = true;
+        }
+        while(false);
+
+        if (!fLoaded && !fRequestShutdown) {
+            // first suggest a reindex
+//            if (!fReset) {
+//                bool fRet = uiInterface.ThreadSafeQuestion(
+//                    strLoadError + ".\n\n" + _("Do you want to rebuild the block database now?"),
+//                    strLoadError + ".\nPlease restart with -reindex-fast or -reindex to recover.",
+//                    "", CClientUIInterface::MSG_ERROR | CClientUIInterface::BTN_ABORT);
+//                if (fRet) {
+//                    fReindex = true;
+//                    fRequestShutdown = false;
+//                } else {
+//                    LogPrintf("Aborted block database rebuild. Exiting.\n");
+//                    return false;
+//                }
+//            } else {
+//                return InitError(strLoadError);
+//            }
+            // TODO: Support UI interface for user prompt
+            strLoadError += ".\nPlease restart with -reindex-onlyheadersync (takes a few minutes) or -reindex-token (takes around 6->9 hours) or -reindex-blockindex (takes very long time, around 24->48 hours) to recover.";
+            return InitError(strLoadError);
+        }
     }
 
-    // ********************************************************* Step 7 was Step 8: load wallet
+    // As LoadBlockIndex can take several minutes, it's possible the user
+    // requested to kill the GUI during the last operation. If so, exit.
+    // As the program has not fully started yet, Shutdown() is possibly overkill.
+    if (fRequestShutdown)
+    {
+        LogPrintf("Shutdown requested. Exiting.\n");
+        return false;
+    }
+    if (fLoaded) {
+        LogPrintf(" block index %15dms\n", GetTimeMillis() - nStart);
+    }
 
+    // ********************************************************* Step 8: load wallet
+    // TODO: Improve wallet logic
     uiInterface.InitMessage(_("<b>Loading wallet...</b>"));
     LogPrintf("Loading wallet...\n");
     nStart = GetTimeMillis();
@@ -1016,162 +1398,6 @@ bool AppInit2(boost::thread_group& threadGroup, CScheduler& scheduler)
             strErrors << _("Cannot downgrade wallet") << "\n";
         pwalletMain->SetMaxVersion(nMaxVersion);
     }
-    // ********************************************************* Step 8 was Step 7: load blockchain
-
-    fReindexOnlyHeaderSync = gArgs.GetBoolArg("-reindex-onlyheadersync", false);
-    fReindexBlockIndex = gArgs.GetBoolArg("-reindex-blockindex", false);
-    if (!fReindexBlockIndex)
-    {
-        fReindexToken = gArgs.GetBoolArg("-reindex-token", false);
-    }
-    LogPrintf("Param fReindexOnlyHeaderSync = %d, fReindexBlockIndex = %d, fReindexToken = %d\n", fReindexOnlyHeaderSync, fReindexBlockIndex, fReindexToken);
-
-    nMainnetNewLogicBlockNumber = gArgs.GetArg("-testnetNewLogicBlockNumber", mainnetNewLogicBlockNumber);
-    nTokenSupportBlockNumber = gArgs.GetArg("-tokenSupportBlockNumber", tokenSupportBlockNumber);
-    LogPrintf("Param nMainnetNewLogicBlockNumber = %d\n",nMainnetNewLogicBlockNumber);
-
-    if (!bitdb.Open(GetDataDir()))
-    {
-        string msg = strprintf(_("Error initializing database environment %s!"
-                                 " To recover, BACKUP THAT DIRECTORY, then remove"
-                                 " everything from it except for wallet.dat."), strDataDir.c_str());
-        return InitError(msg);
-    }
-
-    if (gArgs.GetBoolArg("-loadblockindextest"))
-    {
-        CTxDB txdb("r");
-        txdb.LoadBlockIndex();
-        PrintBlockTree();
-        return false;
-    }
-
-    MAXIMUM_YAC1DOT0_N_FACTOR = gArgs.GetArg("-nFactorAtHardfork", 21);
-    LogPrintf("Param nFactorAtHardfork = %d\n", MAXIMUM_YAC1DOT0_N_FACTOR);
-
-    std::string additionalInfo = fReindexBlockIndex ? "(reindex block index)" : fReindexToken ? "(reindex token)" : "";
-    LogPrintf("Loading block index %s ...\n", additionalInfo);
-    bool fLoaded = false;
-    bool fReindex = fReindexBlockIndex || fReindexToken;
-    while (!fLoaded) 
-    {
-        std::string 
-            strLoadError;
-        // YACOIN TODO ADD SPINNER OR PROGRESS BAR
-        uiInterface.InitMessage(_("<b>Loading block index, this may take several minutes...</b>"));
-
-        nStart = GetTimeMillis();
-        do 
-        {
-            try 
-            {
-                UnloadBlockIndex();
-
-                /** YAC_TOKEN START */
-                {
-                    // Basic tokens
-                    delete ptokens;
-                    delete ptokensdb;
-                    delete ptokensCache;
-
-                    // Basic tokens
-                    ptokensdb = new CTokensDB("cr+", fReindex);
-                    ptokens = new CTokensCache();
-                    ptokensCache = new CLRUCache<std::string, CDatabasedTokenData>(MAX_CACHE_TOKENS_SIZE);
-
-                    // Need to load tokens before we verify the database
-                    if (!ptokensdb->LoadTokens()) {
-                        return InitError("Failed to load Tokens Database");
-                    }
-
-                    if (!ptokensdb->ReadReissuedMempoolState())
-                        LogPrintf("Database failed to load last Reissued Mempool State. Will have to start from empty state\n");
-
-                    LogPrintf("Successfully loaded tokens from database.\nCache of tokens size: %d\n",
-                              ptokensCache->Size());
-                }
-                /** YAC_TOKEN END */
-
-                // Don't build map hash for fReindexBlockIndex
-                if (fReindexToken)
-                {
-                    {
-                        CTxDB txdb;
-                        txdb.BuildMapHash();
-                        txdb.Close();
-                    }
-
-                }
-                if (fReindex)
-                {
-                    // Wipe the database
-                    CTxDB txdb("cr+", fReindex);
-                    fReindexToken = false;
-                    fReindexBlockIndex = false;
-                }
-
-                if (!LoadBlockIndex())
-                {
-                    strLoadError = _("Error loading block database");
-                    break;
-                }
-            }
-            catch(std::exception &e) 
-            {
-                (void)e;
-                strLoadError = _("Error opening block database");
-                break;
-            }
-            fLoaded = true;
-        }
-        while(false);
-
-        if (!fLoaded) 
-        {   // TODO: suggest reindex here
-            strLoadError += ".\nPlease restart with -reindex-onlyheadersync (takes a few minutes) or -reindex-token (takes around 6->9 hours) or -reindex-blockindex (takes very long time, around 24->48 hours) to recover.";
-            return InitError(strLoadError);
-        }
-    }
-
-    // as LoadBlockIndex can take several minutes, it's possible the user
-    // requested to kill bitcoin-qt during the last operation. If so, exit.
-    // As the program has not fully started yet, Shutdown() is possibly overkill.
-    if (fRequestShutdown)
-    {
-        LogPrintf("Shutdown requested. Exiting.\n");
-        return false;
-    }
-    LogPrintf(" block index %15" PRId64 "ms\n", GetTimeMillis() - nStart);
-
-    if (gArgs.GetBoolArg("-printblockindex") || gArgs.GetBoolArg("-printblocktree"))
-    {
-        PrintBlockTree();
-        return false;
-    }
-
-    if (gArgs.IsArgSet("-printblock"))
-    {
-        string strMatch = gArgs.GetArg("-printblock", "");
-        int nFound = 0;
-        for (BlockMap::iterator mi = mapBlockIndex.begin(); mi != mapBlockIndex.end(); ++mi)
-        {
-            uint256 hash = (*mi).first;
-            if (strncmp(hash.ToString().c_str(), strMatch.c_str(), strMatch.size()) == 0)
-            {
-                CBlockIndex* pindex = (*mi).second;
-                CBlock block;
-                block.ReadFromDisk(pindex);
-                block.BuildMerkleTree();
-                block.print();
-                LogPrintf("\n");
-                nFound++;
-            }
-        }
-        if (nFound == 0)
-            LogPrintf("No blocks matching %s were found\n", strMatch);
-        return false;
-    }
-
 
     if (fFirstRun)
     {
@@ -1199,7 +1425,7 @@ bool AppInit2(boost::thread_group& threadGroup, CScheduler& scheduler)
         CWalletDB walletdb(strWalletFileName);
         CBlockLocator locator;
         if (walletdb.ReadBestBlock(locator))
-            pindexRescan = chainActive.FindFork(locator);
+            pindexRescan = FindForkInGlobalIndex(chainActive, locator);
         else
             pindexRescan = chainActive.Genesis();
     }
@@ -1216,63 +1442,90 @@ bool AppInit2(boost::thread_group& threadGroup, CScheduler& scheduler)
         LogPrintf(" rescan      %15" PRId64 "ms\n", GetTimeMillis() - nStart);
     }
 
-    // ********************************************************* Step 9: import blocks
+    // ********************************************************* Step 9: data directory maintenance
+    // Do nothing at the moment
 
-    // Reindex
-    if (fReindex) {
-        int nFile = 1;
-        while (true) {
-            CDiskBlockPos pos(nFile, 0);
-            if (!boost::filesystem::exists(GetBlockPosFilename(pos, "blk")))
-                break; // No block files left to reindex
-            FILE *file = OpenBlockFile(pos.nFile, pos.nPos, "rb");
-            if (!file)
-                break; // This error is logged in OpenBlockFile
-            LogPrintf("Reindexing block file blk%04u.dat...\n", (unsigned int)nFile);
-            LoadExternalBlockFile(file, &pos);
-            nFile++;
-        }
-        fReindex = false;
-        LogPrintf("Reindexing finished\n");
+    // ********************************************************* Step 10: import blocks
+
+    if (!CheckDiskSpace())
+        return false;
+
+    std::vector<fs::path> vImportFiles;
+    for (const std::string& strFile : gArgs.GetArgs("-loadblock")) {
+        vImportFiles.push_back(strFile);
     }
 
-    if (gArgs.IsArgSet("-loadblock"))
-    {
-        uiInterface.InitMessage(_("<b>Importing blockchain data file.</b>"));
-
-        for (const std::string& strFile : gArgs.GetArgs("-loadblock")) {
-            FILE *file = fopen(strFile.c_str(), "rb");
-            if (file)
-                LoadExternalBlockFile(file);
+    // -reindex
+    if (fReindex) {
+        int nFile = 0;
+        while (true) {
+            CDiskBlockPos pos(nFile, 0);
+            if (!fs::exists(GetBlockPosFilename(pos, "blk")))
+                break; // No block files left to reindex
+            FILE *file = OpenBlockFile(pos, true);
+            if (!file)
+                break; // This error is logged in OpenBlockFile
+            LogPrintf("Reindexing block file blk%05u.dat...\n", (unsigned int)nFile);
+            LoadExternalBlockFile(chainparams, file, &pos);
+            nFile++;
         }
+        pblocktree->WriteReindexing(false);
+        fReindex = false;
+        LogPrintf("Reindexing finished\n");
+        // To avoid ending up in a situation without genesis block, re-try initializing (no-op if reindexing worked):
+        LoadGenesisBlock(chainparams);
+    }
+
+    // hardcoded $DATADIR/bootstrap.dat
+    fs::path pathBootstrap = GetDataDir() / "bootstrap.dat";
+    if (fs::exists(pathBootstrap)) {
+        FILE *file = fsbridge::fopen(pathBootstrap, "rb");
+        if (file) {
+            fs::path pathBootstrapOld = GetDataDir() / "bootstrap.dat.old";
+            LogPrintf("Importing bootstrap.dat...\n");
+            LoadExternalBlockFile(chainparams, file);
+            RenameOver(pathBootstrap, pathBootstrapOld);
+        } else {
+            LogPrintf("Warning: Could not open bootstrap file %s\n", pathBootstrap.string());
+        }
+    }
+
+    // -loadblock=
+    for (const fs::path& path : vImportFiles) {
+        FILE *file = fsbridge::fopen(path, "rb");
+        if (file) {
+            LogPrintf("Importing blocks file %s...\n", path.string());
+            LoadExternalBlockFile(chainparams, file);
+        } else {
+            LogPrintf("Warning: Could not open blocks file %s\n", path.string());
+        }
+    }
+
+    // scan for better chains in the block chain database, that are not yet connected in the active best chain
+    CValidationState state;
+    if (!ActivateBestChain(state, chainparams)) {
+        LogPrintf("Failed to connect best block");
         StartShutdown();
     }
 
-    filesystem::path pathBootstrap = GetDataDir() / "bootstrap.dat";
-    if (filesystem::exists(pathBootstrap)) {
-        uiInterface.InitMessage(_("<b>Importing bootstrap blockchain data file.</b>"));
+    if (gArgs.GetBoolArg("-stopafterblockimport", DEFAULT_STOPAFTERBLOCKIMPORT)) {
+        LogPrintf("Stopping after block import\n");
+        StartShutdown();
+    }
 
-        FILE *file = fopen(pathBootstrap.string().c_str(), "rb");
-        if (file) {
-            filesystem::path pathBootstrapOld = GetDataDir() / "bootstrap.dat.old";
-            LoadExternalBlockFile(file);
-            RenameOver(pathBootstrap, pathBootstrapOld);
-        }
+    if (gArgs.GetArg("-persistmempool", DEFAULT_PERSIST_MEMPOOL)) {
+        LoadMempool();
+        fDumpMempoolLater = !fRequestShutdown;
     }
 
     // ********************************************************* Step 11: start node
 
-    RandAddSeedPerfmon();
-
     // debug print
-    LogPrintf("mapBlockIndex.size() = %" PRIszu "\n",   mapBlockIndex.size());
-    LogPrintf("chainActive.Height() = %d\n",                     chainActive.Height());
+    LogPrintf("mapBlockIndex.size() = %u\n",   mapBlockIndex.size());
+    LogPrintf("nBestHeight = %d\n",                   chainActive.Height());
     LogPrintf("setKeyPool.size() = %" PRIszu "\n",      pwalletMain->setKeyPool.size());
     LogPrintf("mapWallet.size() = %" PRIszu " transactions\n",       pwalletMain->mapWallet.size());
     LogPrintf("mapAddressBook.size() = %" PRIszu "\n",  pwalletMain->mapAddressBook.size());
-
-    if (!CheckDiskSpace())
-        return false;
 
     if (gArgs.GetBoolArg("-listenonion", DEFAULT_LISTEN_ONION))
         StartTorControl(threadGroup, scheduler);
@@ -1349,26 +1602,32 @@ bool AppInit2(boost::thread_group& threadGroup, CScheduler& scheduler)
     if (!strErrors.str().empty())
         return InitError(strErrors.str());
 
-    //Yassert( false );   //test
-#ifdef _MSC_VER
-    #ifdef _DEBUG
-        LogPrintf("\a\n" );    // just to call me back after a long debug startup!
-    #endif
-#endif
      // Add wallet transactions that aren't already in a block to mapTransactions
     pwalletMain->ReacceptWalletTransactions();
 
     return !fRequestShutdown;
 }
 
+[[noreturn]] static void new_handler_terminate()
+{
+    // Rather than throwing std::bad-alloc if allocation fails, terminate
+    // immediately to (try to) avoid chain corruption.
+    // Since LogPrintf may itself allocate memory, set the handler directly
+    // to terminate first.
+    std::set_new_handler(std::terminate);
+    LogPrintf("Error: Out of memory. Terminating.\n");
+
+    // The log was successful, terminate now.
+    std::terminate();
+};
+
 bool AppInitBasicSetup()
 {
+    // ********************************************************* Step 1: setup
 #ifdef _MSC_VER
     // Turn off Microsoft heap dump noise
     _CrtSetReportMode(_CRT_WARN, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_WARN, CreateFileA("NUL", GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, 0));
-#endif
-#if _MSC_VER >= 1400
+    _CrtSetReportFile(_CRT_WARN, CreateFileA("NUL", GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, 0));
     // Disable confusing "helpful" text message on abort, Ctrl-C
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
 #endif
@@ -1377,48 +1636,36 @@ bool AppInitBasicSetup()
     // Minimum supported OS versions: WinXP SP3, WinVista >= SP1, Win Server 2008
     // A failure is non-critical and needs no further attention!
 #ifndef PROCESS_DEP_ENABLE
-// We define this here, because GCCs winbase.h limits this to _WIN32_WINNT >= 0x0601 (Windows 7),
-// which is not correct. Can be removed, when GCCs winbase.h is fixed!
+    // We define this here, because GCCs winbase.h limits this to _WIN32_WINNT >= 0x0601 (Windows 7),
+    // which is not correct. Can be removed, when GCCs winbase.h is fixed!
 #define PROCESS_DEP_ENABLE 0x00000001
 #endif
     typedef BOOL (WINAPI *PSETPROCDEPPOL)(DWORD);
     PSETPROCDEPPOL setProcDEPPol = (PSETPROCDEPPOL)GetProcAddress(GetModuleHandleA("Kernel32.dll"), "SetProcessDEPPolicy");
-    if (setProcDEPPol != NULL) setProcDEPPol(PROCESS_DEP_ENABLE);
+    if (setProcDEPPol != nullptr) setProcDEPPol(PROCESS_DEP_ENABLE);
 #endif
+
+    if (!SetupNetworking())
+        return InitError("Initializing networking failed");
+
 #ifndef WIN32
-    umask(077);
+    if (!gArgs.GetBoolArg("-sysperms", false)) {
+        umask(077);
+    }
 
     // Clean shutdown on SIGTERM
-    struct sigaction sa;
-    sa.sa_handler = HandleSIGTERM;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-    sigaction(SIGTERM, &sa, NULL);
-    sigaction(SIGINT, &sa, NULL);
+    registerSignalHandler(SIGTERM, HandleSIGTERM);
+    registerSignalHandler(SIGINT, HandleSIGTERM);
 
     // Reopen debug.log on SIGHUP
-    struct sigaction sa_hup;
-    sa_hup.sa_handler = HandleSIGHUP;
-    sigemptyset(&sa_hup.sa_mask);
-    sa_hup.sa_flags = 0;
-    sigaction(SIGHUP, &sa_hup, NULL);
-#else
-    // what do we do for windows aborts or Ctl-Cs, etc.?
-    bool
-        fWeShouldBeConcerned = true;
+    registerSignalHandler(SIGHUP, HandleSIGHUP);
 
-    if( SetConsoleCtrlHandler( ( PHANDLER_ROUTINE )&WindowsHandleSigterm, true ) )
-        fWeShouldBeConcerned = false;    // success
-    else                        //exigency of wincon.h
-    {    //    // we failed!
-        LogPrintf(
-                    "\n"
-                    "Windows CCH failed?"
-                    "\n"
-                    ""
-                    );
-    }
+    // Ignore SIGPIPE, otherwise it will bring the daemon down if the client closes unexpectedly
+    signal(SIGPIPE, SIG_IGN);
 #endif
+
+    std::set_new_handler(new_handler_terminate);
+
     return true;
 }
 
@@ -1433,21 +1680,46 @@ bool AppInit(int argc, char* argv[])
     CScheduler scheduler;
 
     bool fRet = false;
+
+    //
+    // Parameters
+    //
+    // If Qt is used, parameters/bitcoin.conf are parsed in qt/bitcoin.cpp's main()
+    gArgs.ParseParameters(argc, argv);
+
+    // Process help and version before taking care about datadir
+    if (gArgs.IsArgSet("-?") || gArgs.IsArgSet("-h") ||  gArgs.IsArgSet("-help") || gArgs.IsArgSet("-version") || gArgs.IsArgSet("-v"))
+    {
+        std::string strUsage = "Yacoin version: " + FormatFullVersion() + " " + CLIENT_DATE + "\n";
+
+        if (gArgs.IsArgSet("-version") || gArgs.IsArgSet("-v"))
+        {
+            // Do nothing
+//            strUsage += FormatParagraph(LicenseInfo());
+        }
+        else
+        {
+            strUsage += "\n" + _("Usage:") + "\n" +
+                    "  yacoind [options]                     " + "\n" +
+                    "  yacoind [options] <command> [params]  " + _("Send command to -server or yacoind") + "\n" +
+                    "  yacoind [options] help                " + _("List commands") + "\n" +
+                    "  yacoind [options] help <command>      " + _("Get help for a command") + "\n";
+
+            strUsage += "\n" + HelpMessage();
+        }
+
+        fprintf(stdout, "%s", strUsage.c_str());
+        return true;
+    }
+
     try
     {
-        //
-        // Parameters
-        //
-        // If Qt is used, parameters/bitcoin.conf are parsed in qt/bitcoin.cpp's main()
-        gArgs.ParseParameters(argc, argv);
-        bool
-            fTest_or_Main_Net_is_decided = false;
-
-        if (!boost::filesystem::is_directory(GetDataDir(fTest_or_Main_Net_is_decided)))
+        if (!fs::is_directory(GetDataDir(false)))
         {
-            fprintf(stderr, "Error: Specified directory does not exist\n");
-            Shutdown(NULL);
+            fprintf(stderr, "Error: Specified data directory \"%s\" does not exist.\n", gArgs.GetArg("-datadir", "").c_str());
+            return false;
         }
+
         try
         {
             gArgs.ReadConfigFile(gArgs.GetArg("-conf", YACOIN_CONF_FILENAME));
@@ -1456,113 +1728,95 @@ bool AppInit(int argc, char* argv[])
             return false;
         }
 
-        if(gArgs.IsArgSet("-version") || gArgs.IsArgSet("-v"))
-        {
-            std::string msg = "Yacoin version: " + FormatFullVersion() + "\n\n";
-            fprintf(stdout, "%s", msg.c_str());
-            exit(0);
-        } else if (gArgs.IsArgSet("-?") || gArgs.IsArgSet("-h") || gArgs.IsArgSet("-help"))
-        {
-            // First part of help message is specific to yacoind / RPC client
-            std::string strUsage = _("Yacoin version") + " " + FormatFullVersion() + "\n\n" +
-                _("Usage:") + "\n" +
-                  "  yacoind [options]                     " + "\n" +
-                  "  yacoind [options] <command> [params]  " + _("Send command to -server or yacoind") + "\n" +
-                  "  yacoind [options] help                " + _("List commands") + "\n" +
-                  "  yacoind [options] help <command>      " + _("Get help for a command") + "\n";
-
-            strUsage += "\n" + HelpMessage();
-
-            fprintf(stdout, "%s", strUsage.c_str());
-#ifdef _MSC_VER
-            fRet = false;
-            //Shutdown(NULL);
-#else
-            exit(0);
-#endif
+        // Check for -testnet or -regtest parameter (Params() calls are only valid after this clause)
+        try {
+            SelectParams(ChainNameFromCommandLine());
+        } catch (const std::exception& e) {
+            fprintf(stderr, "Error: %s\n", e.what());
+            return false;
         }
-        else
+
+        bool fCommandLine = false;
+        // Command-line RPC
+        for (int i = 1; i < argc; ++i)
         {
-            bool
-                fCommandLine = false;
-            // Command-line RPC
-            for (int i = 1; i < argc; ++i)
+            if (!IsSwitchChar(argv[i][0]) && !boost::algorithm::istarts_with(argv[i], "yacoin:"))
             {
-                if (!IsSwitchChar(argv[i][0]) && !boost::algorithm::istarts_with(argv[i], "yacoin:"))
-                {
-                    fCommandLine = true;
-                }
-            }
-            if (fCommandLine)
-            {
-                int ret = CommandLineRPC(argc, argv);
-#ifdef _MSC_VER
-                if( 0 == ret )  // signifies a successful RPC call
-                {
-                    fRet = false;
-                }
-#else
-                exit(ret);
-#endif
-            }
-            else {
-                // ********************************************************* Step 1: setup
-                // Set this early so that parameter interactions go to console
-                InitLogging();
-                // ********************************************************* Step 2: parameter interactions
-                InitParameterInteraction();
-                if (!AppInitBasicSetup())
-                {
-                    // InitError will have been called with detailed error, which ends up on console
-                    exit(EXIT_FAILURE);
-                }
-                // ********************************************************* Step 3: parameter-to-internal-flags
-                if (!AppInitParameterInteraction())
-                {
-                    // InitError will have been called with detailed error, which ends up on console
-                    exit(EXIT_FAILURE);
-                }
-
-#if !defined(WIN32) && !defined(QT_GUI)
-                if (fDaemon)
-                {
-                    // Daemonize
-                    pid_t pid = fork();
-                    if (pid < 0)
-                    {
-                        fprintf(stderr, "Error: fork() returned %d errno %d\n", pid, errno);
-                        return false;
-                    }
-                    if (pid > 0)
-                    {
-                        CreatePidFile(GetPidFile(), pid);
-                        return true;
-                    }
-
-                    pid_t sid = setsid();
-                    if (sid < 0)
-                        fprintf(stderr, "Error: setsid() returned %d errno %d\n", sid, errno);
-                }
-#endif
-
-                // Lock data directory after daemonization
-                if (!AppInitLockDataDirectory())
-                {
-                    // If locking the data directory failed, exit immediately
-                    exit(EXIT_FAILURE);
-                }
-
-                fRet = AppInit2(threadGroup, scheduler);
+                fCommandLine = true;
             }
         }
+
+        if (fCommandLine)
+        {
+            int ret = CommandLineRPC(argc, argv);
+            exit(ret);
+        }
+        else {
+            // -server defaults to true for bitcoind but not for the GUI so do this here
+            gArgs.SoftSetBoolArg("-server", true);
+            // Set this early so that parameter interactions go to console
+            InitLogging();
+            InitParameterInteraction();
+            if (!AppInitBasicSetup())
+            {
+                // InitError will have been called with detailed error, which ends up on console
+                exit(EXIT_FAILURE);
+            }
+            if (!AppInitParameterInteraction())
+            {
+                // InitError will have been called with detailed error, which ends up on console
+                exit(EXIT_FAILURE);
+            }
+            if (!AppInitSanityChecks())
+            {
+                // InitError will have been called with detailed error, which ends up on console
+                exit(EXIT_FAILURE);
+            }
+//#if !defined(WIN32) && !defined(QT_GUI)
+//            if (fDaemon)
+//            {
+//                // Daemonize
+//                pid_t pid = fork();
+//                if (pid < 0)
+//                {
+//                    fprintf(stderr, "Error: fork() returned %d errno %d\n", pid, errno);
+//                    return false;
+//                }
+//                if (pid > 0)
+//                {
+//                    CreatePidFile(GetPidFile(), pid);
+//                    return true;
+//                }
+//
+//                pid_t sid = setsid();
+//                if (sid < 0)
+//                    fprintf(stderr, "Error: setsid() returned %d errno %d\n", sid, errno);
+//            }
+//#endif
+            if (gArgs.GetBoolArg("-daemon", false))
+            {
+                fprintf(stdout, "Yacoin server starting\n");
+
+                // Daemonize
+                if (daemon(1, 0)) { // don't chdir (1), do close FDs (0)
+                    fprintf(stderr, "Error: daemon() failed: %s\n", strerror(errno));
+                    return false;
+                }
+            }
+            // Lock data directory after daemonization
+            if (!AppInitLockDataDirectory())
+            {
+                // If locking the data directory failed, exit immediately
+                exit(EXIT_FAILURE);
+            }
+
+            fRet = AppInitMain(threadGroup, scheduler);
+        }
     }
-    catch(std::exception& e)
-    {
-        PrintException(&e, "AppInit()");
-    }
-    catch(...)
-    {
-        PrintException(NULL, "AppInit()");
+    catch (const std::exception& e) {
+        PrintExceptionContinue(&e, "AppInit()");
+    } catch (...) {
+        PrintExceptionContinue(nullptr, "AppInit()");
     }
     if (!fRet)
     {
@@ -1573,30 +1827,20 @@ bool AppInit(int argc, char* argv[])
     {
         WaitForShutdown(&threadGroup);
     }
-#ifdef QT_GUI
-    // ensure we leave the Qt main loop for a clean GUI exit (Shutdown() is called in bitcoin.cpp afterwards)
-    uiInterface.QueueShutdown();
-#else
-    Shutdown(NULL);
-#endif
+    Shutdown();
     return fRet;
 }
 
 extern void noui_connect();
 int main(int argc, char* argv[])
 {
-    bool fRet = false;
-
+    SetupEnvironment();
     nUpTimeStart = GetTime();
-    // Connect yacoind signal handlers
+
+    // Connect bitcoind signal handlers
     noui_connect();
 
-    fRet = AppInit(argc, argv);
-
-    if (fRet)
-        return 0;
-
-    return 1;
+    return (AppInit(argc, argv) ? EXIT_SUCCESS : EXIT_FAILURE);
 }
 #endif
 

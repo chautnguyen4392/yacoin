@@ -1,3 +1,7 @@
+// Copyright (c) 2011-2016 The Bitcoin Core developers
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
 #include "transactiondesc.h"
 
 #include "guiutil.h"
@@ -5,7 +9,8 @@
 
 #include "main.h"
 #include "wallet.h"
-#include "txdb-leveldb.h"
+#include "txdb.h"
+#include "validation.h"
 #include "ui_interface.h"
 #include "base58.h"
 
@@ -14,7 +19,7 @@
 
 QString TransactionDesc::FormatTxStatus(const CWalletTx& wtx)
 {
-    if (!wtx.IsFinal())
+    if (!CheckFinalTx(wtx))
     {
         if (wtx.nLockTime < LOCKTIME_THRESHOLD)
             return tr("Open for %n block(s)", "", chainActive.Height() - wtx.nLockTime);
@@ -274,34 +279,29 @@ QString TransactionDesc::toHTML(CWallet *wallet, CWalletTx &wtx)
             strHTML += "<br><b>" + tr("Transaction") + ":</b><br>";
             strHTML += GUIUtil::HtmlEscape(wtx.ToString(), true);
 
-            CTxDB txdb("r"); // To fetch source txouts
-
             strHTML += "<br><b>" + tr("Inputs") + ":</b>";
             strHTML += "<ul>";
 
             {
                 LOCK(wallet->cs_wallet);
-                BOOST_FOREACH(const CTxIn& txin, wtx.vin)
+                for (const CTxIn& txin : wtx.vin)
                 {
                     COutPoint prevout = txin.prevout;
 
-                    CTransaction prev;
-                    if(txdb.ReadDiskTx(prevout.COutPointGetHash(), prev))
+                    Coin prev;
+                    if(pcoinsTip->GetCoin(prevout, prev))
                     {
-                        if (prevout.COutPointGet_n() < prev.vout.size())
+                        strHTML += "<li>";
+                        const CTxOut &vout = prev.out;
+                        CTxDestination address;
+                        if (ExtractDestination(vout.scriptPubKey, address))
                         {
-                            strHTML += "<li>";
-                            const CTxOut &vout = prev.vout[prevout.COutPointGet_n()];
-                            CTxDestination address;
-                            if (ExtractDestination(vout.scriptPubKey, address))
-                            {
-                                if (wallet->mapAddressBook.count(address) && !wallet->mapAddressBook[address].empty())
-                                    strHTML += GUIUtil::HtmlEscape(wallet->mapAddressBook[address]) + " ";
-                                strHTML += QString::fromStdString(CBitcoinAddress(address).ToString());
-                            }
-                            strHTML = strHTML + " " + tr("Amount") + "=" + BitcoinUnits::formatWithUnit(BitcoinUnits::BTC, vout.nValue);
-                            strHTML = strHTML + " IsMine=" + (wallet->IsMine(vout) ? tr("true") : tr("false")) + "</li>";
+                            if (wallet->mapAddressBook.count(address) && !wallet->mapAddressBook[address].empty())
+                                strHTML += GUIUtil::HtmlEscape(wallet->mapAddressBook[address]) + " ";
+                            strHTML += QString::fromStdString(CBitcoinAddress(address).ToString());
                         }
+                        strHTML = strHTML + " " + tr("Amount") + "=" + BitcoinUnits::formatWithUnit(BitcoinUnits::BTC, vout.nValue);
+                        strHTML = strHTML + " IsMine=" + (wallet->IsMine(vout) ? tr("true") : tr("false")) + "</li>";
                     }
                 }
             }

@@ -1,23 +1,6 @@
 DIST_SUBDIRS =
 AM_LDFLAGS = $(PTHREAD_CFLAGS) $(LIBTOOL_LDFLAGS)
 
-if EMBEDDED_LEVELDB
-DEFS+=-DUSE_LEVELDB
-LEVELDB_CPPFLAGS += -I$(srcdir)/leveldb/include
-LEVELDB_CPPFLAGS += -I$(srcdir)/leveldb/helpers
-LEVELDB_CPPFLAGS += -I$(srcdir)/leveldb/helpers/memenv
-LIBLEVELDB += $(builddir)/leveldb/libleveldb.a
-LIBMEMENV  += $(builddir)/leveldb/libmemenv.a
-
-# NOTE: This dependency is not strictly necessary, but without it make may try to build both in parallel, which breaks the LevelDB build system in a race
-$(LIBLEVELDB): $(LIBMEMENV)
-
-$(LIBLEVELDB) $(LIBMEMENV):
-	@echo "Building LevelDB ..." && $(MAKE) -C $(@D) $(@F) CXX="$(CXX)" \
-	  CC="$(CC)" PLATFORM=$(TARGET_OS) AR="$(AR)" $(LEVELDB_TARGET_FLAGS) \
-          OPT="$(CXXFLAGS) $(CPPFLAGS)"
-endif
-
 BITCOIN_CONFIG_INCLUDES=-I$(builddir)/config
 BITCOIN_INCLUDES=-I$(builddir) -I$(builddir)/obj $(BOOST_CPPFLAGS) $(LEVELDB_CPPFLAGS) $(CRYPTO_CFLAGS) $(SSL_CFLAGS)
 
@@ -64,6 +47,9 @@ libyacoin_common_a_SOURCES= \
     tokens/tokentypes.cpp \
     tokens/tokendb.cpp \
     tokens/tokens.cpp \
+    chain.cpp \
+    chainparams.cpp \
+    chainparamsbase.cpp \
     crypto/siphash.cpp \
     crypto/chacha20.cpp \
     crypto/sha256.cpp \
@@ -72,16 +58,21 @@ libyacoin_common_a_SOURCES= \
     crypto/hmac_sha256.cpp \
     crypto/hmac_sha512.cpp \
     compat/strnlen.cpp \
+    coins.cpp \
+    compressor.cpp \
+    consensus/consensus.cpp \
+    consensus/tx_verify.cpp \
     primitives/transaction.cpp \
     primitives/block.cpp \
-    consensus/consensus.cpp \
     merkleblock.cpp \
     blockencodings.cpp \
     policy/feerate.cpp \
     policy/fees.cpp \
+    policy/policy.cpp \
+    pow.cpp \
     support/cleanse.cpp \
     dbwrapper.cpp \
-    txdb-leveldb.cpp \
+    txdb.cpp \
     hash.cpp \
     base58.cpp \
     version.cpp \
@@ -92,9 +83,11 @@ libyacoin_common_a_SOURCES= \
     bloom.cpp \
     threadinterrupt.cpp \
     crypter.cpp \
+    compressor.cpp \
     key.cpp \
     db.cpp \
     fs.cpp \
+    validation.cpp \
     validationinterface.cpp \
     scheduler.cpp \
     torcontrol.cpp \
@@ -124,6 +117,7 @@ libyacoin_common_a_SOURCES= \
     sync.cpp \
     util.cpp \
     utilstrencodings.cpp \
+    utilmoneystr.cpp \
     utiltime.cpp \
     netaddress.cpp \
     timedata.cpp \
@@ -146,7 +140,7 @@ libyacoin_common_a_LDFLAGS = $(RELDFLAGS) $(AM_LDFLAGS) $(LIBTOOL_APP_LDFLAGS) -
 yacoind_SOURCES = init.cpp
 
 yacoind_LDADD = $(LIBYACOIN_COMMON)
-yacoind_LDADD += $(BOOST_LIBS) $(BDB_LIBS) $(SSL_LIBS) $(CRYPTO_LIBS) $(MINIUPNPC_LIBS) $(LIBLEVELDB) $(LIBMEMENV) $(EVENT_PTHREADS_LIBS) $(EVENT_LIBS)
+yacoind_LDADD += $(BOOST_LIBS) $(BDB_LIBS) $(SSL_LIBS) $(CRYPTO_LIBS) $(MINIUPNPC_LIBS) $(LIBLEVELDB) $(LIBLEVELDB_SSE42) $(LIBMEMENV) $(EVENT_PTHREADS_LIBS) $(EVENT_LIBS)
 yacoind_CPPFLAGS = $(BITCOIN_INCLUDES)
 yacoind_LDFLAGS = $(RELDFLAGS) $(AM_LDFLAGS) $(LIBTOOL_APP_LDFLAGS) -ldl -lpthread -lrt
 
@@ -172,6 +166,10 @@ clean-local:
 %.pb.cc %.pb.h: %.proto
 	@test -f $(PROTOC)
 	$(AM_V_GEN) $(PROTOC) --cpp_out=$(@D) --proto_path=$(abspath $(<D) $<)
+
+if EMBEDDED_LEVELDB
+include Makefile.leveldb.include
+endif
 
 if ENABLE_QT
 include Makefile.qt.include

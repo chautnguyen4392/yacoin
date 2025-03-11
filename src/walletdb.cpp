@@ -8,14 +8,14 @@
     #include "msvc_warnings.push.h"
 #endif
 
-#ifndef BITCOIN_WALLETDB_H
- #include "walletdb.h"
-#endif
+#include "walletdb.h"
 
-#ifndef BITCOIN_WALLET_H
- #include "wallet.h"
-#endif
+#include "wallet.h"
 #include "streams.h"
+#include "chain.h"
+#include "consensus/tx_verify.h"
+#include "consensus/validation.h"
+#include "validation.h"
 
 #include <iostream>
 #include <fstream>
@@ -251,7 +251,7 @@ ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue,
             CWalletTx& wtx = pwallet->mapWallet[hash];
             ssValue >> wtx;
             CValidationState state;
-            if (wtx.CheckTransaction(state) && (wtx.GetHash() == hash))
+            if (CheckTransaction(wtx, state) && (wtx.GetHash() == hash))
                 wtx.BindWallet(pwallet);
             else
             {
@@ -725,7 +725,7 @@ bool DumpWallet(CWallet* pwallet, const string& strDest)
       // produce output
       file << strprintf("# Wallet dump created by Yacoin %s (%s)\n", CLIENT_BUILD.c_str(), CLIENT_DATE.c_str());
       file << strprintf("# * Created on %s\n", EncodeDumpTime(GetTime()).c_str());
-      file << strprintf("# * Best block at time of backup was %i (%s),\n", chainActive.Height(), hashBestChain.ToString().c_str());
+      file << strprintf("# * Best block at time of backup was %i (%s),\n", chainActive.Height(), chainActive.Tip()->blockHash.ToString().c_str());
       file << strprintf("#   mined on %s\n", EncodeDumpTime(chainActive.Tip()->nTime).c_str());
       file << "\n";
       file << "@ BELOW ARE LIST OF P2PKH ADDRESSES AND THEIR PRIVATE KEYS:";
