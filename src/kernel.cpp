@@ -611,6 +611,7 @@ bool CheckProofOfStake(CValidationState &state, CBlockIndex* pindexPrev, const C
     }
 
     // Verify signature
+    LogPrintf("TACA ===> CheckProofOfStake(): VerifySignature on coinstake %s\n", tx.GetHash().ToString());
     if (!VerifySignature(txPrev, tx, 0, MANDATORY_SCRIPT_VERIFY_FLAGS, 0))
         return state.DoS(100, error("CheckProofOfStake() : VerifySignature failed on coinstake %s", tx.GetHash().ToString().c_str()));
 

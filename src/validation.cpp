@@ -950,6 +950,7 @@ bool CScriptCheck::operator()()
 {
     const CScript
         &scriptSig = ptxTo->vin[nIn].scriptSig;
+    LogPrintf("TACA ===> CScriptCheck::operator()(): tx (%s) scriptSig (%s), scriptPubKey (%s)\n", ptxTo->GetHash().ToString(), scriptSig.ToString(), scriptPubKey.ToString());
     if (!VerifyScript(scriptSig, scriptPubKey, *ptxTo, nIn, nFlags, nHashType))
         return error("CScriptCheck() : %s VerifySignature failed",
                      ptxTo->GetHash().ToString().substr(0,10).c_str()
