@@ -1160,27 +1160,65 @@ uint256 GetOutputsHash(const CTransaction& txTo) {
 
 uint256 SignatureHash(const CScript& scriptCode, const CTransaction& txTo, unsigned int nIn, int nHashType)
 {
-    static const uint256 one(uint256S("0000000000000000000000000000000000000000000000000000000000000001"));
-    if (nIn >= txTo.vin.size()) {
-        //  nIn out of range
-        return one;
+    if (nIn >= txTo.vin.size())
+    {
+        LogPrintf("ERROR: SignatureHash() : nIn=%d out of range\n", nIn);
+        return 1;
     }
+    CTransaction txTmp(txTo);
 
-    // Check for invalid use of SIGHASH_SINGLE
-    if ((nHashType & 0x1f) == SIGHASH_SINGLE) {
-        if (nIn >= txTo.vout.size()) {
-            //  nOut out of range
-            return one;
+    CScript script(scriptCode);
+    // In case concatenating two scripts ends up with two codeseparators,
+    // or an extra one at the end, this prevents all those possible incompatibilities.
+    script.FindAndDelete(CScript(OP_CODESEPARATOR));
+
+    // Blank out other inputs' signatures
+    for (unsigned int i = 0; i < txTmp.vin.size(); i++)
+        txTmp.vin[i].scriptSig = CScript();
+    txTmp.vin[nIn].scriptSig = script;
+
+    // Blank out some of the outputs
+    if ((nHashType & 0x1f) == SIGHASH_NONE)
+    {
+        // Wildcard payee
+        txTmp.vout.clear();
+
+        // Let the others update at will
+        for (unsigned int i = 0; i < txTmp.vin.size(); i++)
+            if (i != nIn)
+                txTmp.vin[i].nSequence = 0;
+    }
+    else if ((nHashType & 0x1f) == SIGHASH_SINGLE)
+    {
+        // Only lock-in the txout payee at same index as txin
+        unsigned int nOut = nIn;
+        if (nOut >= txTmp.vout.size())
+        {
+            LogPrintf("ERROR: SignatureHash() : nOut=%d out of range\n", nOut);
+            return 1;
         }
+        txTmp.vout.resize(nOut+1);
+        for (unsigned int i = 0; i < nOut; i++)
+            txTmp.vout[i].SetNull();
+
+        // Let the others update at will
+        for (unsigned int i = 0; i < txTmp.vin.size(); i++)
+            if (i != nIn)
+                txTmp.vin[i].nSequence = 0;
     }
 
-    // Wrapper to serialize only the necessary parts of the transaction being signed
-    CTransactionSignatureSerializer txTmp(txTo, scriptCode, nIn, nHashType);
+    // Blank out other inputs completely, not recommended for open transactions
+    if (nHashType & SIGHASH_ANYONECANPAY)
+    {
+        txTmp.vin[0] = txTmp.vin[nIn];
+        txTmp.vin.resize(1);
+    }
 
     // Serialize and hash
-    CHashWriter ss(SER_GETHASH, 0);
+    CDataStream ss(SER_GETHASH, 0);
+    ss.reserve(10000);
     ss << txTmp << nHashType;
-    return ss.GetHash();
+    return Hash(ss.begin(), ss.end());
 }
 
 bool TransactionSignatureChecker::VerifySignature(const std::vector<unsigned char>& vchSig, const CPubKey& pubkey, const uint256& sighash) const
