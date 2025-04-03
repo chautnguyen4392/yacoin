@@ -1043,6 +1043,13 @@ bool EvalScript(
                     // Drop the signature, since there's no way for a signature to sign itself
                     scriptCode.FindAndDelete(CScript(vchSig));
 
+                    LogPrintf(
+                        "TACA ===> EvalScript OP_CHECKSIGVERIFY, "
+                        "vchSig (%s), vchPubKey (%s), scriptCode (%s)\n",
+                        HexStr(vchSig.begin(), vchSig.end()),
+                        HexStr(vchPubKey.begin(), vchPubKey.end()),
+                        scriptCode.ToString());
+
                     bool fSuccess = IsCanonicalPubKey(vchPubKey, flags) &&
                                     CheckSig(vchSig, vchPubKey, scriptCode,
                                              txTo, nIn, nHashType, flags);
