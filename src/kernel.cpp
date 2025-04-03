@@ -617,8 +617,19 @@ bool CheckProofOfStake(CValidationState &state, CBlockIndex* pindexPrev, const C
         const CTxOut& prevOut = txPrev.vout[tx.vin[nIn].prevout.n];
         TransactionSignatureChecker checker(&tx, nIn);
 
-        if (!VerifyScript(tx.vin[nIn].scriptSig, prevOut.scriptPubKey, MANDATORY_SCRIPT_VERIFY_FLAGS, checker, nullptr))
-            return state.DoS(100, error("CheckProofOfStake() : VerifySignature failed on coinstake %s", tx.GetHash().ToString().c_str()));
+        ScriptError serror = SCRIPT_ERR_OK;
+        if (!VerifyScript(tx.vin[nIn].scriptSig, prevOut.scriptPubKey, MANDATORY_SCRIPT_VERIFY_FLAGS, checker, &serror)) {
+          return state.DoS(
+              100,
+              error("CheckProofOfStake(): %s:%d VerifySignature failed: %s, "
+                    "scriptSig (%s), scriptPubkey (%s)",
+                    tx.GetHash().ToString().c_str(), nIn,
+                    ScriptErrorString(serror), tx.vin[nIn].scriptSig.ToString(),
+                    prevOut.scriptPubKey.ToString()));
+        } else {
+            LogPrintf("TACA ===> CheckProofOfStake(): %s:%d VerifySignature succeed, scriptSig (%s), scriptPubkey (%s)",
+                    tx.GetHash().ToString(), nIn, tx.vin[nIn].scriptSig.ToString(), prevOut.scriptPubKey.ToString());
+        }
     }
 
     if (!CheckStakeKernelHash(nBits, pindexPrev, header, postx.nTxOffset + ::GetSerializeSize(header, SER_DISK, CLIENT_VERSION), txPrev, txin.prevout, tx.nTime, hashProofOfStake, targetProofOfStake, gArgs.GetBoolArg("-debug", false)))

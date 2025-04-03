@@ -15,6 +15,7 @@
 #include "uint256.h"
 #include "streams.h"
 #include "random.h"
+#include "script/script_error.h"
 
 typedef std::vector<unsigned char> valtype;
 
@@ -881,6 +882,15 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
                     }
                     bool fSuccess = checker.CheckSig(vchSig, vchPubKey, scriptCode);
 
+                    if (!fSuccess) {
+                      LogPrintf(
+                          "TACA ===> EvalScript failed OP_CHECKSIGVERIFY, "
+                          "vchSig (%s), vchPubKey (%s), scriptCode (%s)\n",
+                          HexStr(vchSig.begin(), vchSig.end()),
+                          HexStr(vchPubKey.begin(), vchPubKey.end()),
+                          scriptCode.ToString());
+                    }
+
                     if (!fSuccess && (flags & SCRIPT_VERIFY_NULLFAIL) && vchSig.size())
                         return set_error(serror, SCRIPT_ERR_SIG_NULLFAIL);
 
@@ -1164,13 +1174,24 @@ uint256 SignatureHash(const CScript& scriptCode, const CTransaction& txTo, unsig
         }
     }
 
+    LogPrintf("TACA ===> SignatureHash, scriptCode = %s, nHashType = %d\n", scriptCode.ToString(), nHashType);
+
     // Wrapper to serialize only the necessary parts of the transaction being signed
     CTransactionSignatureSerializer txTmp(txTo, scriptCode, nIn, nHashType);
 
     // Serialize and hash
     CHashWriter ss(SER_GETHASH, 0);
     ss << txTmp << nHashType;
-    return ss.GetHash();
+
+    uint256 sighash = ss.GetHash();
+    LogPrintf("TACA ===> SignatureHash ss sighash = %s\n", sighash.ToString());
+
+    CDataStream ss2(SER_GETHASH, 0);
+    ss2 << txTmp << nHashType;
+    LogPrintf("TACA ===> SignatureHash ss2 = %s\n", HexStr(ss2.begin(), ss2.end()));
+    uint256 sighash2 = Hash(ss2.begin(), ss2.end());
+    LogPrintf("TACA ===> SignatureHash ss2 sighash = %s\n", sighash2.ToString());
+    return sighash;
 }
 
 bool TransactionSignatureChecker::VerifySignature(const std::vector<unsigned char>& vchSig, const CPubKey& pubkey, const uint256& sighash) const
@@ -1181,20 +1202,27 @@ bool TransactionSignatureChecker::VerifySignature(const std::vector<unsigned cha
 bool TransactionSignatureChecker::CheckSig(const std::vector<unsigned char>& vchSigIn, const std::vector<unsigned char>& vchPubKey, const CScript& scriptCode) const
 {
     CPubKey pubkey(vchPubKey);
-    if (!pubkey.IsValid())
-        return false;
+    if (!pubkey.IsValid()) {
+      LogPrintf("TACA ===> TransactionSignatureChecker::CheckSig, pubkey (%s) is not valid\n", HexStr(vchPubKey.begin(), vchPubKey.end()));
+      return false;
+    }
 
     // Hash type is one byte tacked on to the end of the signature
     std::vector<unsigned char> vchSig(vchSigIn);
-    if (vchSig.empty())
+    if (vchSig.empty()) {
+        LogPrintf("TACA ===> TransactionSignatureChecker::CheckSig, vchSig (%s) is empty\n", HexStr(vchSigIn.begin(), vchSigIn.end()));
         return false;
+    }
     int nHashType = vchSig.back();
     vchSig.pop_back();
 
     uint256 sighash = SignatureHash(scriptCode, *txTo, nIn, nHashType);
+    LogPrintf("TACA ===> TransactionSignatureChecker::CheckSig, sighash = %s\n", sighash.ToString());
 
-    if (!VerifySignature(vchSig, pubkey, sighash))
+    if (!VerifySignature(vchSig, pubkey, sighash)) {
+        LogPrintf("TACA ===> TransactionSignatureChecker::CheckSig, VerifySignature vchSig (%s) failed\n", HexStr(vchSigIn.begin(), vchSigIn.end()));
         return false;
+    }
 
     return true;
 }
@@ -1288,22 +1316,31 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, unsigne
     set_error(serror, SCRIPT_ERR_UNKNOWN_ERROR);
 
     if ((flags & SCRIPT_VERIFY_SIGPUSHONLY) != 0 && !scriptSig.IsPushOnly()) {
+        LogPrintf("TACA ===> VerifyScript failed on !scriptSig.IsPushOnly\n");
         return set_error(serror, SCRIPT_ERR_SIG_PUSHONLY);
     }
 
     std::vector<std::vector<unsigned char> > stack, stackCopy;
-    if (!EvalScript(stack, scriptSig, flags, checker, serror))
+    if (!EvalScript(stack, scriptSig, flags, checker, serror)) {
+        LogPrintf("TACA ===> VerifyScript failed on EvalScript scriptSig (%s)\n", ScriptErrorString(*serror));
         // serror is set
         return false;
+    }
     if (flags & SCRIPT_VERIFY_P2SH)
         stackCopy = stack;
-    if (!EvalScript(stack, scriptPubKey, flags, checker, serror))
+    if (!EvalScript(stack, scriptPubKey, flags, checker, serror)) {
+        LogPrintf("TACA ===> VerifyScript failed on EvalScript scriptPubKey (%s)\n", ScriptErrorString(*serror));
         // serror is set
         return false;
-    if (stack.empty())
+    }
+    if (stack.empty()) {
+        LogPrintf("TACA ===> VerifyScript failed on stack.empty()\n");
         return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
-    if (CastToBool(stack.back()) == false)
+    }
+    if (CastToBool(stack.back()) == false) {
+        LogPrintf("TACA ===> VerifyScript failed on stack.back()\n");
         return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
+    }
 
     // Additional validation for spend-to-script-hash transactions:
     if ((flags & SCRIPT_VERIFY_P2SH) && scriptPubKey.IsPayToScriptHash())
