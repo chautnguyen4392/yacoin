@@ -4,12 +4,12 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "regex"
-#include "script/script.h"
 #include "version.h"
 #include "streams.h"
 #include "serialize.h"
 #include "primitives/transaction.h"
-//#include "script/standard.h"
+#include "script/script.h"
+#include "script/standard.h"
 #include "util.h"
 #include "base58.h"
 #include "chainparams.h"
@@ -2616,8 +2616,7 @@ bool CreateTokenTransaction(CWallet* pwallet, CCoinControl& coinControl, const s
     // Currently, the lock address is same as the change address
     CAmount lockAmount = GetLockAmount(tokenType) * tokens.size();
     const CKeyID& keyID = boost::get<CKeyID>(coinControl.destChange);
-    CScript feeLockScriptPubKey;
-    feeLockScriptPubKey.SetCsvP2PKH(feeLockDuration, keyID);
+    CScript feeLockScriptPubKey = GetScriptForCsvP2PKH(feeLockDuration, keyID);
 
     CAmount curBalance = pwallet->GetBalance();
 
@@ -2772,8 +2771,7 @@ bool CreateReissueTokenTransaction(CWallet* pwallet, CCoinControl& coinControl, 
     // Assign the correct lock amount and the correct lock address depending on the type of token issuance that is happening
     // Currently, the lock address is same as the change address
     const CKeyID& keyID = boost::get<CKeyID>(coinControl.destChange);
-    CScript feeLockScriptPubKey;
-    feeLockScriptPubKey.SetCsvP2PKH(feeLockDuration, keyID);
+    CScript feeLockScriptPubKey = GetScriptForCsvP2PKH(feeLockDuration, keyID);
     CRecipient recipient = {feeLockScriptPubKey, lockAmount, fSubtractFeeFromAmount};
     vecSend.push_back(recipient);
 

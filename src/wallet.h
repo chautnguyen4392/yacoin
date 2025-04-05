@@ -10,18 +10,14 @@
 
 #include <stdlib.h>
 
-#ifndef BITCOIN_MAIN_H
- #include "main.h"
-#endif
-
-#ifndef BITCOIN_UI_INTERFACE_H
- #include "ui_interface.h"
-#endif
-
-#ifndef BITCOIN_WALLETDB_H
- #include "walletdb.h"
-#endif
+#include "main.h"
+#include "ui_interface.h"
+#include "walletdb.h"
 #include "streams.h"
+#include "script/standard.h"
+#include "script/ismine.h"
+
+#include <boost/foreach.hpp>
 
 static const unsigned int DEFAULT_KEYPOOL_SIZE = 100;
 
@@ -251,9 +247,9 @@ public:
     // Generate a new key
     CPubKey GenerateNewKey();
     // Adds a key to the store, and saves it to disk.
-    bool AddKey(const CKey& key);
+    bool AddKeyPubKey(const CKey& key, const CPubKey &pubkey);
     // Adds a key to the store, without saving it to disk (used by LoadWallet)
-    bool LoadKey(const CKey& key) { return CCryptoKeyStore::AddKey(key); }
+    bool LoadKey(const CKey& key, const CPubKey &pubkey) { return CCryptoKeyStore::AddKeyPubKey(key, pubkey); }
     // Load metadata (used by LoadWallet)
     bool LoadKeyMetadata(const CPubKey &pubkey, const CKeyMetadata &metadata);
 

@@ -5,13 +5,9 @@
     #include "msvc_warnings.push.h"
 #endif
 
-#ifndef BITCOIN_INIT_H
- #include "init.h" // for pwalletMain
-#endif
-
-#ifndef _BITCOINRPC_H_
- #include "bitcoinrpc.h"
-#endif
+#include "init.h" // for pwalletMain
+#include "bitcoinrpc.h"
+#include "script/standard.h"
 
 using namespace json_spirit;
 
@@ -56,18 +52,18 @@ Value importprivkey(const Array& params, bool fHelp)
     if (fWalletUnlockMintOnly) // ppcoin: no importprivkey in mint-only mode
         throw JSONRPCError(RPC_WALLET_UNLOCK_NEEDED, "Wallet is unlocked for minting only.");
 
-    CKey key;
-    bool fCompressed;
-    CSecret secret = vchSecret.GetSecret(fCompressed);
-    key.SetSecret(secret, fCompressed);
-    CKeyID vchAddress = key.GetPubKey().GetID();
+    CKey key = vchSecret.GetKey();
+    if (!key.IsValid()) throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Private key outside allowed range");
+
+    CPubKey pubkey = key.GetPubKey();
+    CKeyID vchAddress = pubkey.GetID();
     {
         LOCK2(cs_main, pwalletMain->cs_wallet);
 
         pwalletMain->MarkDirty();
         pwalletMain->SetAddressBookName(vchAddress, strLabel);
 
-        if (!pwalletMain->AddKey(key))
+        if (!pwalletMain->AddKeyPubKey(key, pubkey))
             throw JSONRPCError(RPC_WALLET_ERROR, "Error adding key to wallet");
 
         pwalletMain->ScanForWalletTransactions(chainActive.Genesis(), true);
@@ -87,7 +83,7 @@ Value importaddress(const Array& params, bool fHelp)
     CScript script;
     CBitcoinAddress address(params[0].get_str());
     if (address.IsValid()) {
-        script.SetDestination(address.Get());
+        script = GetScriptForDestination(address.Get());
     } else if (IsHex(params[0].get_str())) {
         std::vector<unsigned char> data(ParseHex(params[0].get_str()));
         script = CScript(data.begin(), data.end());
@@ -147,7 +143,7 @@ Value removeaddress(const Array& params, bool fHelp)
 
     CBitcoinAddress address(params[0].get_str());
     if (address.IsValid()) {
-        script.SetDestination(address.Get());
+        script = GetScriptForDestination(address.Get());
     } else if (IsHex(params[0].get_str())) {
         std::vector<unsigned char> data(ParseHex(params[0].get_str()));
         script = CScript(data.begin(), data.end());
@@ -203,29 +199,31 @@ Value dumpprivkey(const Array& params, bool fHelp)
     if (fWalletUnlockMintOnly) // ppcoin: no dumpprivkey in mint-only mode
         throw JSONRPCError(RPC_WALLET_UNLOCK_NEEDED, "Wallet is unlocked for minting only.");
 
-    CScript scriptPubKey;
-    scriptPubKey.SetDestination(address.Get());
+    CScript scriptPubKey = GetScriptForDestination(address.Get());
     if (!IsMine(*pwalletMain,scriptPubKey))
         throw JSONRPCError(RPC_WALLET_ERROR, "Wallet doesn't manage coins in this address");
 
-    CSecret vchSecret;
+    CKeyingMaterial vchSecret;
     txnouttype whichTypeRet;
     bool fCompressed;
     CScript subscript;
     if (!pwalletMain->GetSecret(scriptPubKey, vchSecret, fCompressed, whichTypeRet, subscript))
         throw JSONRPCError(RPC_WALLET_ERROR, "Private key for address " + strAddress + " is not known");
 
+    CKey key;
+    key.Set(vchSecret.begin(), vchSecret.end(), fCompressed);
+
     Object result;
     if (whichTypeRet == TX_CLTV_P2SH || whichTypeRet == TX_CSV_P2SH)
     {
         result.push_back(Pair("address_type", "P2SH address"));
-        result.push_back(Pair("private_key", CBitcoinSecret(vchSecret, fCompressed).ToString()));
+        result.push_back(Pair("private_key", CBitcoinSecret(key).ToString()));
         result.push_back(Pair("redeem_script", HexStr(subscript.begin(), subscript.end())));
     }
     else
     {
         result.push_back(Pair("address_type", "P2PKH address"));
-        result.push_back(Pair("private_key", CBitcoinSecret(vchSecret, fCompressed).ToString()));
+        result.push_back(Pair("private_key", CBitcoinSecret(key).ToString()));
     }
     return result;
 }

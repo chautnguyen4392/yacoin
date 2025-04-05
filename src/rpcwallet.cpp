@@ -14,6 +14,7 @@
 #include "validation.h"
 #include "coincontrol.h"
 #include "streams.h"
+#include "script/standard.h"
 
 #include <sstream>
 
@@ -98,7 +99,7 @@ void LockTimeRedeemScriptToJSON(const CScript& redeemScript, txnouttype type, Ob
     out.push_back(Pair("PublicKey", data));
 
     // Convert to address
-    CScriptID redeemScriptID = redeemScript.GetID();
+    CScriptID redeemScriptID(redeemScript);
     if (type == TX_CLTV_P2SH)
     {
         addressType += "CltvAddress";
@@ -286,8 +287,8 @@ CBitcoinAddress GetAccountAddress(string strAccount, bool bForceNew=false)
     // Check if the current key has been used
     if (account.vchPubKey.IsValid())
     {
-        CScript scriptPubKey;
-        scriptPubKey.SetDestination(account.vchPubKey.GetID());
+        // build standard output script via GetScriptForDestination()
+        CScript scriptPubKey = GetScriptForDestination(account.vchPubKey.GetID());
         for (map<uint256, CWalletTx>::iterator it = pwalletMain->mapWallet.begin();
              it != pwalletMain->mapWallet.end() && account.vchPubKey.IsValid();
              ++it)
@@ -582,11 +583,11 @@ Value verifymessage(const Array& params, bool fHelp)
     ss << strMessageMagic;
     ss << strMessage;
 
-    CKey key;
-    if (!key.SetCompactSignature(Hash(ss.begin(), ss.end()), vchSig))
+    CPubKey pubkey;
+    if (!pubkey.RecoverCompact(Hash(ss.begin(), ss.end()), vchSig))
         return false;
 
-    return (key.GetPubKey().GetID() == keyID);
+    return (pubkey.GetID() == keyID);
 }
 
 
@@ -599,10 +600,10 @@ Value getreceivedbyaddress(const Array& params, bool fHelp)
 
     // Bitcoin address
     CBitcoinAddress address = CBitcoinAddress(params[0].get_str());
-    CScript scriptPubKey;
     if (!address.IsValid())
         throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid Yacoin address");
-    scriptPubKey.SetDestination(address.Get());
+    // build standard output script via GetScriptForDestination()
+    CScript scriptPubKey = GetScriptForDestination(address.Get());
     if (!IsMine(*pwalletMain,scriptPubKey))
         return (double)0.0;
 
@@ -997,7 +998,7 @@ Value sendmany(const Array& params, bool fHelp)
     vector<CRecipient> vecSend;
 
     int64_t totalAmount = 0;
-    BOOST_FOREACH(const Pair& s, sendTo)
+    for(const Pair& s : sendTo)
     {
         CBitcoinAddress address(s.name_);
         if (!address.IsValid())
@@ -1007,8 +1008,8 @@ Value sendmany(const Array& params, bool fHelp)
             throw JSONRPCError(RPC_INVALID_PARAMETER, string("Invalid parameter, duplicated address: ")+s.name_);
         setAddress.insert(address);
 
-        CScript scriptPubKey;
-        scriptPubKey.SetDestination(address.Get());
+        // build standard output script via GetScriptForDestination()
+        CScript scriptPubKey = GetScriptForDestination(address.Get());
         int64_t nAmount = AmountFromValue(s.value_);
 
         if (nAmount < MIN_TXOUT_AMOUNT)
@@ -1073,7 +1074,7 @@ Value addmultisigaddress(const Array& params, bool fHelp)
                       "(got %" PRIszu " keys, but need at least %d to redeem)", keys.size(), nRequired));
     if (keys.size() > 16)
         throw runtime_error("Number of addresses involved in the multisignature address creation > 16\nReduce the number");
-    std::vector<CKey> pubkeys;
+    std::vector<CPubKey> pubkeys;
     pubkeys.resize(keys.size());
     for (unsigned int i = 0; i < keys.size(); i++)
     {
@@ -1091,16 +1092,18 @@ Value addmultisigaddress(const Array& params, bool fHelp)
             if (!pwalletMain->GetPubKey(keyID, vchPubKey))
                 throw runtime_error(
                     strprintf("no full public key for address %s",ks.c_str()));
-            if (!vchPubKey.IsValid() || !pubkeys[i].SetPubKey(vchPubKey))
+            if (!vchPubKey.IsFullyValid())
                 throw runtime_error(" Invalid public key: "+ks);
+            pubkeys[i] = vchPubKey;
         }
 
         // Case 2: hex public key
         else if (IsHex(ks))
         {
             CPubKey vchPubKey(ParseHex(ks));
-            if (!vchPubKey.IsValid() || !pubkeys[i].SetPubKey(vchPubKey))
+            if (!vchPubKey.IsFullyValid())
                 throw runtime_error(" Invalid public key: "+ks);
+            pubkeys[i] = vchPubKey;
         }
         else
         {
@@ -1109,14 +1112,13 @@ Value addmultisigaddress(const Array& params, bool fHelp)
     }
 
     // Construct using pay-to-script-hash:
-    CScript inner;
-    inner.SetMultisig(nRequired, pubkeys);
+    CScript inner = GetScriptForMultisig(nRequired, pubkeys);
 
     if (inner.size() > MAX_SCRIPT_ELEMENT_SIZE)
     throw runtime_error(
         strprintf("redeemScript exceeds size limit: %" PRIszu " > %d", inner.size(), MAX_SCRIPT_ELEMENT_SIZE));
 
-    CScriptID innerID = inner.GetID();
+    CScriptID innerID(inner);
     pwalletMain->AddCScript(inner);
 
     pwalletMain->SetAddressBookName(innerID, strAccount);
@@ -1169,10 +1171,10 @@ Value spendcltv(const Array& params, bool fHelp)
 
     // Check if cltv address exist in the wallet
     CBitcoinAddress address = CBitcoinAddress(params[0].get_str());
-    CScript scriptPubKey;
     if (!address.IsValid())
         throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid cltv address");
-    scriptPubKey.SetDestination(address.Get());
+    // build standard output script via GetScriptForDestination()
+    CScript scriptPubKey = GetScriptForDestination(address.Get());
     if (!IsMine(*pwalletMain,scriptPubKey))
     	throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Wallet doesn't manage coins in this address");
 
@@ -1192,7 +1194,7 @@ Value spendcltv(const Array& params, bool fHelp)
     vector<unsigned char> vch;
     if (!redeemScript.GetOp(pc, opcode, vch))
         throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Wallet can't get lock time from redeemscript");
-    const CScriptNum nLockTime(vch);
+    const CScriptNum nLockTime(vch, false);
 
     // Check if destination address is valid
     CBitcoinAddress destAddress(params[1].get_str());
@@ -1250,10 +1252,10 @@ Value spendcsv(const Array& params, bool fHelp)
 
     // Check if csv address exist in the wallet
     CBitcoinAddress address = CBitcoinAddress(params[0].get_str());
-    CScript scriptPubKey;
     if (!address.IsValid())
         throw runtime_error("Invalid csv address");
-    scriptPubKey.SetDestination(address.Get());
+    // build standard output script via GetScriptForDestination()
+    CScript scriptPubKey = GetScriptForDestination(address.Get());
     if (!IsMine(*pwalletMain,scriptPubKey))
         throw runtime_error("Wallet doesn't manage coins in this address");
 
@@ -1321,14 +1323,13 @@ Value createcltvaddress(const Array& params, bool fHelp)
         strAccount = AccountFromValue(params[1]);
 
     // Construct using pay-to-script-hash:
-    CScript inner;
-    inner.SetCltvP2SH(nLockTime, pubkey);
+    CScript inner = GetScriptForCltvP2SH(nLockTime, pubkey);
 
     if (inner.size() > MAX_SCRIPT_ELEMENT_SIZE)
     throw runtime_error(
         strprintf("redeemScript exceeds size limit: %" PRIszu " > %d", inner.size(), MAX_SCRIPT_ELEMENT_SIZE));
 
-    CScriptID innerID = inner.GetID();
+    CScriptID innerID(inner);
     pwalletMain->AddCScript(inner);
 
     CBitcoinAddress address(innerID);
@@ -1385,15 +1386,14 @@ Value createcsvaddress(const Array& params, bool fHelp)
         strAccount = AccountFromValue(params[2]);
 
     // Construct using pay-to-script-hash:
-    CScript inner;
     ::uint32_t nSequence = fBlockHeightLock? nLockTime: (nLockTime | CTxIn::SEQUENCE_LOCKTIME_TYPE_FLAG);
-    inner.SetCsvP2SH(nSequence, pubkey);
+    CScript inner = GetScriptForCsvP2SH(nSequence, pubkey);
 
     if (inner.size() > MAX_SCRIPT_ELEMENT_SIZE)
     throw runtime_error(
         strprintf("redeemScript exceeds size limit: %" PRIszu " > %d", inner.size(), MAX_SCRIPT_ELEMENT_SIZE));
 
-    CScriptID innerID = inner.GetID();
+    CScriptID innerID(inner);
     pwalletMain->AddCScript(inner);
 
     CBitcoinAddress address(innerID);
@@ -1512,11 +1512,11 @@ Value timelockcoins(const Array& params, bool fHelp)
     if (isRelativeTimelock)
     {
         ::uint32_t nSequence = isBlockHeightLock? nLockTime: (nLockTime | CTxIn::SEQUENCE_LOCKTIME_TYPE_FLAG);
-        timeLockScriptPubKey.SetCsvP2PKH(nSequence, keyID);
+        timeLockScriptPubKey = GetScriptForCsvP2PKH(nSequence, keyID);
     }
     else
     {
-        timeLockScriptPubKey.SetCltvP2PKH(::uint32_t(nLockTime), keyID);
+        timeLockScriptPubKey = GetScriptForCltvP2PKH(::uint32_t(nLockTime), keyID);
     }
 
     if (timeLockScriptPubKey.size() > MAX_SCRIPT_ELEMENT_SIZE)
@@ -1581,7 +1581,7 @@ Value addredeemscript(const Array& params, bool fHelp)
     // Construct using pay-to-script-hash:
     vector<unsigned char> innerData = ParseHexV(params[0], "redeemScript");
     CScript inner(innerData.begin(), innerData.end());
-    CScriptID innerID = inner.GetID();
+    CScriptID innerID(inner);
     pwalletMain->AddCScript(inner);
 
     pwalletMain->SetAddressBookName(innerID, strAccount);
@@ -2520,7 +2520,7 @@ public:
         obj.push_back(Pair("isscript", false));
         if (mine == MINE_SPENDABLE) {
             pwalletMain->GetPubKey(keyID, vchPubKey);
-            obj.push_back(Pair("pubkey", HexStr(vchPubKey.Raw())));
+            obj.push_back(Pair("pubkey", HexStr(vchPubKey)));
             obj.push_back(Pair("iscompressed", vchPubKey.IsCompressed()));
         }
         return obj;
@@ -2657,7 +2657,7 @@ Value makekeypair(const Array& params, bool fHelp)
     CPrivKey vchPrivKey = key.GetPrivKey();
     Object result;
     result.push_back(Pair("PrivateKey", HexStr<CPrivKey::iterator>(vchPrivKey.begin(), vchPrivKey.end())));
-    result.push_back(Pair("PublicKey", HexStr(key.GetPubKey().Raw())));
+    result.push_back(Pair("PublicKey", HexStr(key.GetPubKey())));
     return result;
 }
 #ifdef _MSC_VER

@@ -9,9 +9,12 @@
 #include "chainparams.h"
 #include "consensus/validation.h"
 #include "fs.h"
+#include "key.h"
 #include "validation.h"
 #include "net_processing.h"
 #include "policy/policy.h"
+#include "script/standard.h"
+#include "script/sigcache.h"
 #include "scheduler.h"
 #include "txdb.h"
 #include "torcontrol.h"
@@ -39,7 +42,6 @@
 
 static const bool DEFAULT_PROXYRANDOMIZE = true;
 ::int64_t nUpTimeStart = 0;
-bool fNewerOpenSSL = false; // for key.cpp's benefit
 static const ::uint32_t mainnetNewLogicBlockNumber = 1890000;
 static const ::uint32_t testnetNewLogicBlockNumber = 0;
 static const ::uint32_t tokenSupportBlockNumber = 1911210;
@@ -147,6 +149,7 @@ public:
 };
 
 static CCoinsViewErrorCatcher *pcoinscatcher = nullptr;
+static std::unique_ptr<ECCVerifyHandle> globalVerifyHandle;
 
 void WaitForShutdown(boost::thread_group* threadGroup)
 {
@@ -253,6 +256,8 @@ void Shutdown()
     GetMainSignals().UnregisterBackgroundSignalScheduler();
     CloseWallets();
     LogPrintf("wallet unregistered\n");
+    globalVerifyHandle.reset();
+    ECC_Stop();
     LogPrintf("Yacoin exited\n\n");
 }
 #endif
@@ -437,6 +442,7 @@ std::string HelpMessage()
     strUsage += HelpMessageOpt("-logips", strprintf(_("Include IP addresses in debug output (default: %u)"), DEFAULT_LOGIPS));
     strUsage += HelpMessageOpt("-logtimestamps", strprintf(_("Prepend debug output with timestamp (default: %u)"), DEFAULT_LOGTIMESTAMPS));
     strUsage += HelpMessageOpt("-logtimemicros", strprintf("Add microsecond precision to debug timestamps (default: %u)", DEFAULT_LOGTIMEMICROS));
+    strUsage += HelpMessageOpt("-maxsigcachesize=<n>", strprintf("Limit sum of signature cache and script execution cache sizes to <n> MiB (default: %u)", DEFAULT_MAX_SIG_CACHE_SIZE));
     strUsage += HelpMessageOpt("-maxtipage=<n>", strprintf("Maximum tip age in seconds to consider node in initial block download (default: %u)", DEFAULT_MAX_TIP_AGE));
     strUsage += HelpMessageOpt("-printtoconsole", _("Send trace/debug info to console instead of debug.log file"));
     strUsage += HelpMessageOpt("-printtodebugger", _("Send trace/debug info to debug.log file"));
@@ -811,9 +817,35 @@ static bool LockDataDirectory(bool probeOnly)
     return true;
 }
 
+/** Sanity checks
+ *  Ensure that Bitcoin is running in a usable environment with all
+ *  necessary library support.
+ */
+bool InitSanityCheck(void)
+{
+    if(!ECC_InitSanityCheck()) {
+        InitError("Elliptic curve cryptography sanity check failure. Aborting.");
+        return false;
+    }
+
+    if (!Random_SanityCheck()) {
+        InitError("OS cryptographic RNG sanity check failure. Aborting.");
+        return false;
+    }
+
+    return true;
+}
+
 bool AppInitSanityChecks()
 {
     // ********************************************************* Step 4: sanity checks
+
+    // Initialize elliptic curve code
+    std::string sha256_algo = SHA256AutoDetect();
+    LogPrintf("Using the '%s' SHA256 implementation\n", sha256_algo);
+    RandomInit();
+    ECC_Start();
+    globalVerifyHandle.reset(new ECCVerifyHandle());
 
     // Probe the data directory lock to give an early error message, if possible
     // We cannot hold the data directory lock here, as the forking for daemon() hasn't yet happened,
@@ -881,6 +913,9 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
     LogPrintf("Using OpenSSL version %s\n\n", SSLeay_version(SSLEAY_VERSION));
     LogPrintf("Wallet is %s\n", strDataDir + "/" + strWalletFileName);
 
+    InitSignatureCache();
+    InitScriptExecutionCache();
+
     if (nScriptCheckThreads)
     {
         LogPrintf("Using %u threads for script verification\n", nScriptCheckThreads);
@@ -907,13 +942,6 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
 #if defined( USE_UPNP )
         LogPrintf( "USE_UPNP is defined\n" );
 #endif
-
-    unsigned int nCutoffVersion = (unsigned int)((int)'j' - (int)'`');
-    unsigned int nV = SSLEAY_VERSION_NUMBER;
-    nV &= 0x000000f0;
-    nV >>= 4;
-    if( nV > nCutoffVersion )
-        fNewerOpenSSL = true;
 
     std::ostringstream strErrors;
     ::int64_t nStart;

@@ -7,6 +7,7 @@
 #ifndef YACOIN_PRIMITIVES_BLOCK_H
 #define YACOIN_PRIMITIVES_BLOCK_H
 
+#include "bignum.h"
 #include "primitives/transaction.h"
 #include "serialize.h"
 #include "uint256.h"
@@ -16,7 +17,7 @@
 
 class CWallet;
 class CTransaction;
-class CScriptCheck;
+class CKeyStore;
 
 #pragma pack(push, 1)
 struct block_header

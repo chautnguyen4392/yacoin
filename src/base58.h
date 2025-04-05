@@ -18,17 +18,10 @@
 #include <string>
 #include <vector>
 
-#ifndef BITCOIN_BIGNUM_H
- #include "bignum.h"
-#endif
-
-#ifndef BITCOIN_KEY_H
- #include "key.h"
-#endif
-
-#ifndef H_BITCOIN_SCRIPT
- #include "script/script.h"
-#endif
+#include "bignum.h"
+#include "key.h"
+#include "script/script.h"
+#include "script/standard.h"
 
 // Encode a byte sequence as a base58-encoded string
 std::string EncodeBase58(const unsigned char* pbegin, const unsigned char* pend);
@@ -145,11 +138,11 @@ bool inline CBitcoinAddressVisitor::operator()(const CNoDestination &id) const {
 class CBitcoinSecret : public CBase58Data
 {
 public:
-    CBitcoinSecret();
-    CBitcoinSecret(const CSecret& vchSecret, bool fCompressed);
+    CBitcoinSecret(const CKey& vchSecret) { SetKey(vchSecret); }
+    CBitcoinSecret() {}
 
-    void SetSecret(const CSecret& vchSecret, bool fCompressed);
-    CSecret GetSecret(bool &fCompressedOut);
+    void SetKey(const CKey& vchSecret);
+    CKey GetKey();
 
     bool IsValid() const;
     bool SetString(const char* pszSecret);

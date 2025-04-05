@@ -8,21 +8,10 @@
     #include "msvc_warnings.push.h"
 #endif
 
-#ifndef BITCOIN_TXDB_H
- #include "txdb.h"
-#endif
-
-#ifndef BITCOIN_WALLET_H
- #include "wallet.h"
-#endif
-
-#ifndef PPCOIN_KERNEL_H
- #include "kernel.h"
-#endif
-
-#ifndef COINCONTROL_H
- #include "coincontrol.h"
-#endif
+#include "txdb.h"
+#include "wallet.h"
+#include "kernel.h"
+#include "coincontrol.h"
 
 #include "random.h"
 #include "net_processing.h"
@@ -32,6 +21,8 @@
 #include "policy/policy.h"
 #include "validation.h"
 #include "utilmoneystr.h"
+#include "script/sign.h"
+#include "script/standard.h"
 
 #include <boost/algorithm/string/replace.hpp>
 #include <openssl/rand.h>
@@ -83,19 +74,57 @@ std::string COutput::ToString() const
     return strprintf("COutput(%s, %d, %d, %d) [%s]", tx->GetHash().ToString(), i, fSpendable, nDepth, FormatMoney(tx->vout[i].nValue).c_str());
 }
 
+class CAffectedKeysVisitor : public boost::static_visitor<void> {
+private:
+    const CKeyStore &keystore;
+    std::vector<CKeyID> &vKeys;
+
+public:
+    CAffectedKeysVisitor(const CKeyStore &keystoreIn, std::vector<CKeyID> &vKeysIn) : keystore(keystoreIn), vKeys(vKeysIn) {}
+
+    void Process(const CScript &script) {
+        txnouttype type;
+        std::vector<CTxDestination> vDest;
+        int nRequired;
+        if (ExtractDestinations(script, type, vDest, nRequired)) {
+            for(const CTxDestination &dest : vDest)
+                boost::apply_visitor(*this, dest);
+        }
+    }
+
+    void operator()(const CKeyID &keyId) {
+        if (keystore.HaveKey(keyId))
+            vKeys.push_back(keyId);
+    }
+
+    void operator()(const CScriptID &scriptId) {
+        CScript script;
+        if (keystore.GetCScript(scriptId, script))
+            Process(script);
+    }
+
+    void operator()(const CNoDestination &none) {}
+};
+
+
+static void ExtractAffectedKeys(const CKeyStore &keystore, const CScript& scriptPubKey, std::vector<CKeyID> &vKeys) {
+    CAffectedKeysVisitor(keystore, vKeys).Process(scriptPubKey);
+}
+
 CPubKey CWallet::GenerateNewKey()
 {
+    AssertLockHeld(cs_wallet); // mapKeyMetadata
     bool fCompressed = CanSupportFeature(FEATURE_COMPRPUBKEY); // default to compressed public keys if we want 0.6.0 wallets
 
     RandAddSeedPerfmon();
-    CKey key;
-    key.MakeNewKey(fCompressed);
+    CKey secret;
+    secret.MakeNewKey(fCompressed);
 
     // Compressed public keys were introduced in version 0.6.0
     if (fCompressed)
         SetMinVersion(FEATURE_COMPRPUBKEY);
 
-    CPubKey pubkey = key.GetPubKey();
+    CPubKey pubkey = secret.GetPubKey();
 
     // Create new metadata
     int64_t nCreationTime = GetTime();
@@ -103,20 +132,23 @@ CPubKey CWallet::GenerateNewKey()
     if (!nTimeFirstKey || nCreationTime < nTimeFirstKey)
         nTimeFirstKey = nCreationTime;
 
-    if (!AddKey(key))
+    if (!AddKeyPubKey(secret, pubkey))
         throw std::runtime_error("CWallet::GenerateNewKey() : AddKey failed");
-    return key.GetPubKey();
+    return pubkey;
 }
 
-bool CWallet::AddKey(const CKey& key)
+bool CWallet::AddKeyPubKey(const CKey& secret, const CPubKey &pubkey)
 {
-    CPubKey pubkey = key.GetPubKey();
-    if (!CCryptoKeyStore::AddKey(key))
+    AssertLockHeld(cs_wallet); // mapKeyMetadata
+    if (!CCryptoKeyStore::AddKeyPubKey(secret, pubkey))
         return false;
     if (!fFileBacked)
         return true;
-    if (!IsCrypted())
-        return CWalletDB(strWalletFile).WriteKey(pubkey, key.GetPrivKey(), mapKeyMetadata[pubkey.GetID()]);
+    if (!IsCrypted()) {
+        return CWalletDB(strWalletFile).WriteKey(pubkey,
+                                                 secret.GetPrivKey(),
+                                                 mapKeyMetadata[pubkey.GetID()]);
+    }
     return true;
 }
 
@@ -126,8 +158,8 @@ bool CWallet::AddCryptedKey(const CPubKey &vchPubKey, const vector<unsigned char
         return false;
 
     // check if we need to remove from watch-only
-    CScript script;
-    script.SetDestination(vchPubKey.GetID());
+    // build standard output script via GetScriptForDestination()
+    CScript script = GetScriptForDestination(vchPubKey.GetID());
     if (HaveWatchOnly(script))
         RemoveWatchOnly(script);
 
@@ -168,7 +200,7 @@ bool CWallet::LoadCScript(const CScript& redeemScript)
      * these. Do not add them to the wallet and warn. */
     if (redeemScript.size() > MAX_SCRIPT_ELEMENT_SIZE)
     {
-        std::string strAddr = CBitcoinAddress(redeemScript.GetID()).ToString();
+        std::string strAddr = CBitcoinAddress(CScriptID(redeemScript)).ToString();
         LogPrintf(
             "LoadCScript() : Warning: This wallet contains a redeemScript of "
             "size %" PRIszu
@@ -442,7 +474,7 @@ bool CWallet::DecryptWallet(const SecureString& strWalletPassphrase)
 
     {
         LOCK(cs_wallet);
-        BOOST_FOREACH(const MasterKeyMap::value_type& pMasterKey, mapMasterKeys)
+        for(const MasterKeyMap::value_type& pMasterKey : mapMasterKeys)
         {
             if(!crypter.SetKeyFromPassphrase(strWalletPassphrase, pMasterKey.second.vchSalt, pMasterKey.second.nDeriveIterations, pMasterKey.second.nDerivationMethod))
                 return false;
@@ -472,8 +504,7 @@ bool CWallet::DecryptWallet(const SecureString& strWalletPassphrase)
             KeyMap::const_iterator mi = mapKeys.begin();
             while (mi != mapKeys.end())
             {
-                CKey key;
-                key.SetSecret((*mi).second.first, (*mi).second.second);
+                CKey key = (*mi).second;
                 pwalletdbDecryption->EraseCryptedKey(key.GetPubKey());
                 pwalletdbDecryption->WriteKey(key.GetPubKey(), key.GetPrivKey(), mapKeyMetadata[(*mi).first]);
                 mi++;
@@ -696,9 +727,9 @@ bool CWallet::AddToWallet(const CWalletTx& wtxIn)
                 return false;
 #ifndef QT_GUI
         // If default receiving address gets used, replace it with a new one
-        CScript scriptDefaultKey;
-        scriptDefaultKey.SetDestination(vchDefaultKey.GetID());
-        BOOST_FOREACH(const CTxOut& txout, wtx.vout)
+        // build standard output script via GetScriptForDestination()
+        CScript scriptDefaultKey = GetScriptForDestination(vchDefaultKey.GetID());
+        for(const CTxOut& txout : wtx.vout)
         {
             if (txout.scriptPubKey == scriptDefaultKey)
             {
@@ -2970,7 +3001,7 @@ bool CWallet::CreateTransactionAll(
                 int nIn = 0;
                 for (const auto& coin : setCoins)
                 {
-                    if (!SignSignature(*this, coin.txout, wtxNew, nIn++))
+                    if (!SignSignature(*this, coin.txout, wtxNew, nIn++, SIGHASH_ALL))
                     {
                         strFailReason = _("Signing transaction failed");
                         return false;
@@ -2980,7 +3011,7 @@ bool CWallet::CreateTransactionAll(
                 if (AreTokensDeployed()) {
                     for (const auto& token : setTokens)
                     {
-                        if (!SignSignature(*this, token.txout, wtxNew, nIn++))
+                        if (!SignSignature(*this, token.txout, wtxNew, nIn++, SIGHASH_ALL))
                         {
                             strFailReason = _("Signing token transaction failed");
                             return false;
@@ -3105,8 +3136,8 @@ bool CWallet::MergeCoins(const int64_t& nAmount, const int64_t& nMinValue, const
     CPubKey vchPubKey = reservekey.GetReservedKey();
 
     // Output script
-    CScript scriptOutput;
-    scriptOutput.SetDestination(vchPubKey.GetID());
+    // build standard output script via GetScriptForDestination()
+    CScript scriptOutput = GetScriptForDestination(vchPubKey.GetID());
 
     // Insert output
     wtxNew.vout.push_back(CTxOut(0, scriptOutput));
@@ -3128,7 +3159,7 @@ bool CWallet::MergeCoins(const int64_t& nAmount, const int64_t& nMinValue, const
             const CWalletTx *txin = vwtxPrev[i];
 
             // Sign scripts to get actual transaction size for fee calculation
-            if (!SignSignature(*this, *txin, wtxNew, i))
+            if (!SignSignature(*this, *txin, wtxNew, i, SIGHASH_ALL))
                 return false;
         }
 */
@@ -3148,7 +3179,7 @@ bool CWallet::MergeCoins(const int64_t& nAmount, const int64_t& nMinValue, const
                 const CWalletTx *txin = vwtxPrev[i];
 
                 // Sign all scripts
-                if (!SignSignature(*this, *txin, wtxNew, i))
+                if (!SignSignature(*this, *txin, wtxNew, i, SIGHASH_ALL))
                     return false;
             }
 
@@ -3181,7 +3212,7 @@ bool CWallet::MergeCoins(const int64_t& nAmount, const int64_t& nMinValue, const
             const CWalletTx *txin = vwtxPrev[i];
 
             // Sign all scripts again
-            if (!SignSignature(*this, *txin, wtxNew, i))
+            if (!SignSignature(*this, *txin, wtxNew, i, SIGHASH_ALL))
                 return false;
         }
 
@@ -3348,8 +3379,8 @@ string CWallet::SendMoneyToDestination(const CTxDestination& address, int64_t nV
         return _("Insufficient funds");
 
     // Parse Bitcoin address
-    CScript scriptPubKey;
-    scriptPubKey.SetDestination(address);
+    // build standard output script via GetScriptForDestination()
+    CScript scriptPubKey = GetScriptForDestination(address);
 
     return SendMoney(scriptPubKey, nValue, wtxNew, fAskFee, fromScriptPubKey, useExpiredTimelockUTXO);
 }
@@ -3871,7 +3902,7 @@ void CWallet::GetAllReserveKeys(set<CKeyID>& setAddress) const
     CWalletDB walletdb(strWalletFile);
 
     LOCK2(cs_main, cs_wallet);
-    BOOST_FOREACH(const int64_t& id, setKeyPool)
+    for(const int64_t& id : setKeyPool)
     {
         CKeyPool keypool;
         if (!walletdb.ReadPool(id, keypool))

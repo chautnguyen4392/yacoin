@@ -314,53 +314,69 @@ ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue,
         }
         else if (strType == "key" || strType == "wkey")
         {
-            vector<unsigned char> vchPubKey;
+            CPubKey vchPubKey;
             ssKey >> vchPubKey;
+            if (!vchPubKey.IsValid())
+            {
+                strErr = "Error reading wallet database: CPubKey corrupt";
+                return false;
+            }
+
             CKey key;
+            CPrivKey pkey;
+            uint256 hash;
+
             if (strType == "key")
             {
                 wss.nKeys++;
-                CPrivKey pkey;
                 ssValue >> pkey;
-                key.SetPubKey(vchPubKey);
-                if (!key.SetPrivKey(pkey))
-                {
-                    strErr = "Error reading wallet database: CPrivKey corrupt";
-                    return false;
-                }
-                if (key.GetPubKey() != vchPubKey)
-                {
-                    strErr = "Error reading wallet database: CPrivKey pubkey inconsistency";
-                    return false;
-                }
-                if (!key.IsValid())
-                {
-                    strErr = "Error reading wallet database: invalid CPrivKey";
-                    return false;
-                }
-            }
-            else
-            {
+            } else {
                 CWalletKey wkey;
                 ssValue >> wkey;
-                key.SetPubKey(vchPubKey);
-                if (!key.SetPrivKey(wkey.vchPrivKey))
-                {
-                    strErr = "Error reading wallet database: CPrivKey corrupt";
-                    return false;
-                }
-                if (key.GetPubKey() != vchPubKey)
-                {
-                    strErr = "Error reading wallet database: CWalletKey pubkey inconsistency";
-                    return false;
-                }
-                if (!key.IsValid())
-                {
-                    strErr = "Error reading wallet database: invalid CWalletKey";
-                    return false;
-                }
+                pkey = wkey.vchPrivKey;
             }
-            if (!pwallet->LoadKey(key))
+
+            // Old wallets store keys as "key" [pubkey] => [privkey]
+            // ... which was slow for wallets with lots of keys, because the public key is re-derived from the private key
+            // using EC operations as a checksum.
+            // Newer wallets store keys as "key"[pubkey] => [privkey][hash(pubkey,privkey)], which is much faster while
+            // remaining backwards-compatible.
+            try
+            {
+                ssValue >> hash;
+            }
+            catch (...) {}
+
+            bool fSkipCheck = false;
+
+            if (!hash.IsNull())
+            {
+                // hash pubkey/privkey to accelerate wallet load
+                std::vector<unsigned char> vchKey;
+                vchKey.reserve(vchPubKey.size() + pkey.size());
+                vchKey.insert(vchKey.end(), vchPubKey.begin(), vchPubKey.end());
+                vchKey.insert(vchKey.end(), pkey.begin(), pkey.end());
+
+                if (Hash(vchKey.begin(), vchKey.end()) != hash)
+                {
+                    strErr = "Error reading wallet database: CPubKey/CPrivKey corrupt";
+                    return false;
+                }
+
+                fSkipCheck = true;
+            }
+
+            if (!key.Load(pkey, vchPubKey, fSkipCheck))
+            {
+                strErr = "Error reading wallet database: CPrivKey corrupt";
+                return false;
+            }
+            if (key.GetPubKey() != vchPubKey)
+            {
+                strErr = "Error reading wallet database: CPrivKey pubkey inconsistency";
+                return false;
+            }
+            if (!pwallet->LoadKey(key, vchPubKey))
             {
                 strErr = "Error reading wallet database: LoadKey failed";
                 return false;
@@ -739,22 +755,19 @@ bool DumpWallet(CWallet* pwallet, const string& strDest)
           CKey key;
           if (pwallet->GetKey(keyid, key)) {
               if (pwallet->mapAddressBook.count(keyid)) {
-                  CSecret secret = key.GetSecret(IsCompressed);
                   file << strprintf("%s %s label=%s # addr=%s\n",
-                                    CBitcoinSecret(secret, IsCompressed).ToString().c_str(),
+                                    CBitcoinSecret(key).ToString(),
                                     strTime.c_str(),
                                     EncodeDumpString(pwallet->mapAddressBook[keyid]).c_str(),
                                     strAddr.c_str());
               } else if (setKeyPool.count(keyid)) {
-                  CSecret secret = key.GetSecret(IsCompressed);
                   file << strprintf("%s %s reserve=1 # addr=%s\n",
-                                    CBitcoinSecret(secret, IsCompressed).ToString().c_str(),
+                                    CBitcoinSecret(key).ToString(),
                                     strTime.c_str(),
                                     strAddr.c_str());
               } else {
-                  CSecret secret = key.GetSecret(IsCompressed);
                   file << strprintf("%s %s change=1 # addr=%s\n",
-                                    CBitcoinSecret(secret, IsCompressed).ToString().c_str(),
+                                    CBitcoinSecret(key).ToString(),
                                     strTime.c_str(),
                                     strAddr.c_str());
               }
@@ -766,24 +779,26 @@ bool DumpWallet(CWallet* pwallet, const string& strDest)
       for (const auto& elem: mapScripts) {
           const auto& redeemScriptHash = elem.first;
           const auto& redeemScript = elem.second;
-          CSecret secret;
+          CKeyingMaterial secret;
           bool IsCompressed;
           txnouttype whichTypeRet;
           CScript tempScript;
           std::string strAddr = CBitcoinAddress(redeemScriptHash).ToString();
           pwallet->GetSecret(redeemScript, secret, IsCompressed, whichTypeRet, tempScript);
 
-          if (pwallet->mapAddressBook.count(redeemScriptHash)) {
+          CKey key;
+          key.Set(secret.begin(), secret.end(), IsCompressed);
 
+          if (pwallet->mapAddressBook.count(redeemScriptHash)) {
               file << strprintf("%s type=%s label=%s redeemscript=%s # addr=%s\n",
-                                CBitcoinSecret(secret, IsCompressed).ToString().c_str(),
+                                CBitcoinSecret(key).ToString(),
                                 GetTxnOutputType(whichTypeRet),
                                 EncodeDumpString(pwallet->mapAddressBook[redeemScriptHash]).c_str(),
                                 HexStr(redeemScript.begin(), redeemScript.end()).c_str(),
                                 strAddr.c_str());
           } else {
               file << strprintf("%s type=%s change=1 redeemscript=%s # addr=%s\n",
-                                CBitcoinSecret(secret, IsCompressed).ToString().c_str(),
+                                CBitcoinSecret(key).ToString(),
                                 GetTxnOutputType(whichTypeRet),
                                 HexStr(redeemScript.begin(), redeemScript.end()).c_str(),
                                 strAddr.c_str());
@@ -843,11 +858,9 @@ bool ImportWallet(CWallet *pwallet, const string& strLocation)
           if (!vchSecret.SetString(vstr[0]))
               continue;
 
-          bool fCompressed;
-          CKey key;
-          CSecret secret = vchSecret.GetSecret(fCompressed);
-          key.SetSecret(secret, fCompressed);
-          CKeyID keyid = key.GetPubKey().GetID();
+          CKey key = vchSecret.GetKey();
+          CPubKey pubkey = key.GetPubKey();
+          CKeyID keyid = pubkey.GetID();
           CScript scriptP2SH;
           std::string strLabel;
           bool fLabel = true;
@@ -869,11 +882,11 @@ bool ImportWallet(CWallet *pwallet, const string& strLocation)
           }
 
           if (pwallet->HaveKey(keyid)) {
-              if (readState == readP2SH && !pwallet->GetCScript(scriptP2SH.GetID(), scriptP2SH))
+              if (readState == readP2SH && !pwallet->GetCScript(CScriptID(scriptP2SH), scriptP2SH))
               {
                   pwallet->AddCScript(scriptP2SH);
                   if (fLabel)
-                      pwallet->SetAddressBookName(scriptP2SH.GetID(), strLabel);
+                      pwallet->SetAddressBookName(CScriptID(scriptP2SH), strLabel);
               }
               LogPrintf("Skipping import of %s (key already present)\n", CBitcoinAddress(keyid).ToString());
              continue;
@@ -896,7 +909,7 @@ bool ImportWallet(CWallet *pwallet, const string& strLocation)
           {
               pwallet->AddCScript(scriptP2SH);
               if (fLabel)
-                  pwallet->SetAddressBookName(scriptP2SH.GetID(), strLabel);
+                  pwallet->SetAddressBookName(CScriptID(scriptP2SH), strLabel);
           }
       }
       file.close();

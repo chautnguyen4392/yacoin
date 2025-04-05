@@ -16,8 +16,6 @@
 
 inline int Testuint256AdHoc(std::vector<std::string> vArg);
 
-extern bool fNewerOpenSSL;  // for key.h => key.cpp's benefit
-
 /** Base class without constructors for uint256 and uint160.
  * This makes the compiler let u use it in a union.
  */
@@ -610,6 +608,27 @@ public:
         return ReadLE64((unsigned char*)&pn);
     }
 };
+
+/* uint256 from const char *.
+ * This is a separate function because the constructor uint256(const char*) can result
+ * in dangerously catching uint256(0).
+ */
+inline uint256 uint256S(const char *str)
+{
+    uint256 rv;
+    rv.SetHex(str);
+    return rv;
+}
+/* uint256 from std::string.
+ * This is a separate function because the constructor uint256(const std::string &str) can result
+ * in dangerously catching uint256(0) via std::string(const char*).
+ */
+inline uint256 uint256S(const std::string& str)
+{
+    uint256 rv;
+    rv.SetHex(str);
+    return rv;
+}
 
 inline bool operator==(const uint256& a, ::uint64_t b)                           { return (base_blob256)a == b; }
 inline bool operator!=(const uint256& a, ::uint64_t b)                           { return (base_blob256)a != b; }

@@ -12,8 +12,11 @@
 #include "multisigaddressentry.h"
 #include "multisiginputentry.h"
 #include "multisigdialog.h"
+#include "policy/policy.h"
 #include "ui_multisigdialog.h"
 #include "script/script.h"
+#include "script/standard.h"
+#include "script/sign.h"
 #include "sendcoinsentry.h"
 #include "util.h"
 #include "wallet.h"
@@ -148,7 +151,7 @@ void MultisigDialog::on_createAddressButton_clicked()
     if(!model)
         return;
 
-    std::vector<CKey> pubkeys;
+    std::vector<CPubKey> pubkeys;
     pubkeys.resize(ui->pubkeyEntries->count());
     unsigned int required = ui->requiredSignatures->text().toUInt();
 
@@ -159,9 +162,9 @@ void MultisigDialog::on_createAddressButton_clicked()
             return;
         QString str = entry->getPubkey();
         CPubKey vchPubKey(ParseHex(str.toStdString().c_str()));
-        if(!vchPubKey.IsValid())
+        if (!vchPubKey.IsFullyValid())
             return;
-        pubkeys[i].SetPubKey(vchPubKey);
+        pubkeys[i] = vchPubKey;
     }
 
     if(pubkeys.size() > 16)
@@ -182,14 +185,13 @@ void MultisigDialog::on_createAddressButton_clicked()
         return;
     }
     
-    CScript script;
-    script.SetMultisig(required, pubkeys);
+    CScript script = GetScriptForMultisig(required, pubkeys);
     if (script.size() > MAX_SCRIPT_ELEMENT_SIZE)
     {
         QMessageBox::warning(this, tr("Error"), tr("Redeem script exceeds size limit: %1 > %2\nReduce the number of addresses involved in the address creation.").arg(script.size()).arg(MAX_SCRIPT_ELEMENT_SIZE), QMessageBox::Ok);
         return;
     }
-    CScriptID scriptID = script.GetID();
+    CScriptID scriptID(script);
     CBitcoinAddress address(scriptID);
 
     ui->multisigAddress->setText(address.ToString().c_str());
@@ -215,7 +217,7 @@ void MultisigDialog::on_saveRedeemScriptButton_clicked()
     std::string redeemScript = ui->redeemScript->text().toStdString();
     std::vector<unsigned char> scriptData(ParseHex(redeemScript));
     CScript script(scriptData.begin(), scriptData.end());
-    CScriptID scriptID = script.GetID();
+    CScriptID scriptID(script);
 
     LOCK(wallet->cs_wallet);
     if(!wallet->HaveCScript(scriptID))
@@ -237,7 +239,7 @@ void MultisigDialog::on_saveMultisigAddressButton_clicked()
 
     std::vector<unsigned char> scriptData(ParseHex(redeemScript));
     CScript script(scriptData.begin(), scriptData.end());
-    CScriptID scriptID = script.GetID();
+    CScriptID scriptID(script);
 
     LOCK(wallet->cs_wallet);
     if(!wallet->HaveCScript(scriptID))
@@ -310,8 +312,8 @@ void MultisigDialog::on_createTransactionButton_clicked()
             {
                 SendCoinsRecipient recipient = entry->getValue();
                 CBitcoinAddress address(recipient.address.toStdString());
-                CScript scriptPubKey;
-                scriptPubKey.SetDestination(address.Get());
+                // build standard output script via GetScriptForDestination()
+                CScript scriptPubKey = GetScriptForDestination(address.Get());
                 int64_t amount = recipient.amount;
                 CTxOut output(amount, scriptPubKey);
                 transaction.vout.push_back(output);
@@ -474,11 +476,14 @@ void MultisigDialog::on_signTransactionButton_clicked()
         }
         const CScript& prevPubKey = mapPrevOut[txin.prevout];
 
-        txin.scriptSig.clear();
-        SignSignature(*wallet, prevPubKey, mergedTx, i, SIGHASH_ALL);
-        txin.scriptSig = CombineSignatures(prevPubKey, mergedTx, i, txin.scriptSig, tx.vin[i].scriptSig);
-        if(!VerifyScript(txin.scriptSig, prevPubKey, mergedTx, i, true, 0))
-        {
+        SignatureData sigdata;
+        ProduceSignature(TransactionSignatureCreator(wallet, &mergedTx, i, SIGHASH_ALL), prevPubKey, sigdata);
+        sigdata = CombineSignatures(prevPubKey, TransactionSignatureChecker(&mergedTx, i), sigdata, DataFromTransaction(mergedTx, i));
+
+        UpdateTransaction(mergedTx, i, sigdata);
+
+        ScriptError serror = SCRIPT_ERR_OK;
+        if (!VerifyScript(txin.scriptSig, prevPubKey, STANDARD_SCRIPT_VERIFY_FLAGS, TransactionSignatureChecker(&mergedTx, i), &serror)) {
             fComplete = false;
         }
     }
