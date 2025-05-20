@@ -68,14 +68,15 @@
  */
 
 CCriticalSection cs_main;
-CCriticalSection cs_vpwalletRegistered;
-std::vector<CWallet*> vpwalletRegistered;
 BlockMap mapBlockIndex;
 CChain chainActive;
 // Best header we've seen so far (used for getheaders queries' starting points).
 CBlockIndex *pindexBestHeader = nullptr;
 size_t nCoinCacheUsage = 5000 * 300;
+int64_t nMaxTipAge = DEFAULT_MAX_TIP_AGE;
 CTxMemPool mempool;
+int nScriptCheckThreads = 0;
+::int64_t nTransactionFee = MIN_TX_FEE;
 bool fReindex = false;
 bool fTxIndex = true;
 bool fRequireStandard = true;
@@ -97,6 +98,11 @@ bool fAddressIndex = false;
 
 static void CheckBlockIndex(const Consensus::Params& consensusParams);
 static bool PoSContextualBlockChecks(const CBlock& block, CValidationState& state, CBlockIndex* pindex);
+
+/** Constant stuff for coinbase transactions we create: */
+CScript COINBASE_FLAGS;
+
+const std::string strMessageMagic = "Yacoin Signed Message:\n";
 
 // Internal stuff
 namespace {
@@ -207,8 +213,6 @@ enum FlushStateMode {
 static bool FlushStateToDisk(const CChainParams& chainParams, CValidationState &state, FlushStateMode mode, int nManualPruneHeight=0);
 bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsViewCache &inputs, bool fScriptChecks, unsigned int flags, bool cacheSigStore, bool cacheFullScriptStore, std::vector<CScriptCheck> *pvChecks = nullptr);
 static FILE* OpenUndoFile(const CDiskBlockPos &pos, bool fReadOnly = false);
-static void SetBestChain(const CBlockLocator& loc);
-static void UpdatedTransaction(const uint256& hashTx);
 
 static bool isHardforkHappened()
 {
@@ -1598,11 +1602,6 @@ static DisconnectResult DisconnectBlock(const CBlock& block, const CBlockIndex* 
         }
     }
 
-    // ppcoin: clean up wallet after disconnecting coinstake
-    // TODO: Support wallet notification
-    for(const CTransaction& tx : block.vtx)
-        SyncWithWallets(tx, &block, false, false);
-
     return fClean ? DISCONNECT_OK : DISCONNECT_UNCLEAN;
 }
 
@@ -2077,14 +2076,6 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
         }
     }
 
-    // Watch for transactions paying to me
-    // TODO: Support wallet notification
-    for(const CTransaction& tx : block.vtx)
-        SyncWithWallets(tx, &block, true);
-    static uint256 hashPrevBestCoinBase;
-    UpdatedTransaction(hashPrevBestCoinBase);
-    hashPrevBestCoinBase = block.vtx[0].GetHash();
-
     assert(pindex->phashBlock);
     // add this block to the view's block chain
     view.SetBestBlock(pindex->GetBlockHash());
@@ -2243,8 +2234,7 @@ bool static FlushStateToDisk(const CChainParams& chainparams, CValidationState &
     }
     if (fDoFullFlush || ((mode == FLUSH_STATE_ALWAYS || mode == FLUSH_STATE_PERIODIC) && nNow > nLastSetChain + (int64_t)DATABASE_WRITE_INTERVAL * 1000000)) {
         // Update best block in wallet (so we can detect restored wallets).
-//        GetMainSignals().SetBestChain(chainActive.GetLocator());
-        SetBestChain(chainActive.GetLocator());
+        GetMainSignals().SetBestChain(chainActive.GetLocator());
         nLastSetChain = nNow;
     }
     } catch (const std::runtime_error& e) {
@@ -2301,11 +2291,6 @@ void static UpdateTip(CBlockIndex *pindexNew) {
         }
     }
 
-    // Update best block in wallet (so we can detect restored wallets)
-    if (!fIsInitialDownload)
-    {
-        SetBestChain(chainActive.GetLocator());
-    }
     uint256 hash = pindexNew->GetBlockHash();
 
     LogPrintf("UpdateTip: new best=%s height=%d trust=%s, date=%s\n",
@@ -2385,7 +2370,6 @@ bool static DisconnectTip(CValidationState& state, const CChainParams& chainpara
     UpdateTip(pindexDelete->pprev);
     // Let wallets know transactions went from 1-confirmed to
     // 0-confirmed or conflicted:
-    // TODO: Support wallet notification
     GetMainSignals().BlockDisconnected(pblock);
     return true;
 }
@@ -4678,86 +4662,6 @@ bool GetAddressUnspent(uint160 addressHash, int type,
     return true;
 }
 
-//////////////////////////////////////////////////////////////////////////////
-//
-// dispatching functions
-//
-
-// These functions dispatch to one or all registered wallets
-
-// notify wallets about a new best chain
-static void SetBestChain(const CBlockLocator& loc)
-{
-    for(CWallet* pwallet : vpwalletRegistered)
-        pwallet->SetBestChain(loc);
-}
-
-// notify wallets about an updated transaction
-static void UpdatedTransaction(const uint256& hashTx)
-{
-    for(CWallet* pwallet : vpwalletRegistered)
-        pwallet->UpdatedTransaction(hashTx);
-}
-
-// erases transaction with the given hash from all wallets
-static void EraseFromWallets(uint256 hash)
-{
-    for(CWallet* pwallet : vpwalletRegistered)
-        pwallet->EraseFromWallet(hash);
-}
-
-void RegisterWallet(CWallet* pwalletIn)
-{
-    {
-        LOCK(cs_vpwalletRegistered);
-        vpwalletRegistered.push_back(pwalletIn);
-    }
-}
-
-void CloseWallets()
-{
-    {
-        LOCK(cs_vpwalletRegistered);
-        for(CWallet* pwallet : vpwalletRegistered)
-            delete pwallet;
-        vpwalletRegistered.clear();
-    }
-}
-
-// notify wallets about an incoming inventory (for request counts)
-void Inventory(const uint256& hash)
-{
-    for(CWallet* pwallet : vpwalletRegistered)
-        pwallet->Inventory(hash);
-}
-
-// ask wallets to resend their transactions
-void ResendWalletTransactions()
-{
-    for(CWallet* pwallet : vpwalletRegistered)
-        pwallet->ResendWalletTransactions();
-}
-
-void SyncWithWallets(const CTransaction& tx, const CBlock* pblock, bool fUpdate, bool fConnect)
-{
-    if (!fConnect)
-    {
-        // ppcoin: wallets need to refund inputs when disconnecting coinstake
-        if (tx.IsCoinStake())
-        {
-            for(CWallet* pwallet : vpwalletRegistered)
-                if (pwallet->IsFromMe(tx))
-                    pwallet->DisableTransaction(tx);
-        }
-        return;
-    }
-
-    for(CWallet* pwallet : vpwalletRegistered)
-        pwallet->AddToWalletIfInvolvingMe(tx, pblock, fUpdate);
-    // Preloaded coins cache invalidation
-    fCoinsDataActual = false;
-}
-
 //! Guess how far we are in the verification process at the given block index
 double GuessVerificationProgress(const ChainTxData& data, CBlockIndex *pindex) {
     if (pindex == nullptr)
@@ -4823,7 +4727,7 @@ bool GetCoinAge(const CTransaction& tx, const CCoinsViewCache &view, uint64_t& n
             if (txPrev->GetHash() != prevout.hash)
                 return error("%s() : txid mismatch in GetCoinAge()", __PRETTY_FUNCTION__);
 
-            if (header.GetBlockTime() + nStakeMinAge > tx.nTime)
+            if (header.GetBlockTime() + Params().GetConsensus().nStakeMinAge > tx.nTime)
                 continue; // only count coins meeting min age requirement
 
             int64_t nValueIn = txPrev->vout[txin.prevout.n].nValue;

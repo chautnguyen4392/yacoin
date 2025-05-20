@@ -11,12 +11,12 @@
 #endif
 
 #ifndef BITCOIN_WALLET_H
-#include "wallet.h"
+#include "wallet/wallet.h"
 #endif
 
 #include "primitives/block.h"
 #include "txmempool.h"
-#include "wallet.h"
+#include "wallet/wallet.h"
 
 #include <stdint.h>
 #include <memory>
@@ -160,7 +160,7 @@ public:
     BlockAssembler();
 
     /** Construct a new block template with coinbase to scriptPubKeyIn */
-    std::unique_ptr<CBlockTemplate> CreateNewBlock(CWallet* pwallet);
+    std::unique_ptr<CBlockTemplate> CreateNewBlock(const CScript& scriptPubKeyIn);
 
 private:
     // utility functions
@@ -215,6 +215,6 @@ void SHA256Transform(void* pstate, void* pinput, const void* pinit);
 extern double dHashesPerSec;
 extern ::int64_t nHPSTimerStart;
 
-void GenerateYacoins(bool fGenerate, CWallet* pwallet, int nblocks = -10);
+void GenerateYacoins(bool fGenerate, int nblocks = -10);
 
 #endif  // NOVACOIN_MINER_H

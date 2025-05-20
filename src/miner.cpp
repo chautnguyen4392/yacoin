@@ -47,6 +47,9 @@
 #include "init.h"
 #include "random_nonce.h"
 
+#include "wallet/wallet.h"
+#include "wallet/rpcwallet.h"
+
 using std::auto_ptr;
 using std::list;
 using std::map;
@@ -445,7 +448,7 @@ bool BlockAssembler::TestPackageTransactions(const CTxMemPool::setEntries& packa
     return true;
 }
 
-std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(CWallet* pwallet)
+std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& scriptPubKeyIn)
 {
     int64_t nTimeStart = GetTimeMicros();
 
@@ -463,8 +466,7 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(CWallet* pwallet)
     txNew.vin[0].prevout.SetNull();
     txNew.vout.resize(1);
 
-    CReserveKey reservekey(pwallet);
-    txNew.vout[0].scriptPubKey << ToByteVector(reservekey.GetReservedKey()) << OP_CHECKSIG;
+    txNew.vout[0].scriptPubKey = scriptPubKeyIn;
 
     // Add coinbase tx as first transaction
     pblock->vtx.push_back(txNew);
@@ -702,7 +704,7 @@ bool check_for_stop_mining(CBlockIndex* pindexPrev) {
 }
 
 //_____________________________________________________________________________
-static void YacoinMiner(CWallet* pwallet)  // here fProofOfStake is always false
+static void YacoinMiner()  // here fProofOfStake is always false
 {
   LogPrintf("CPUMiner started for proof-of-work\n");
   SetThreadPriority(THREAD_PRIORITY_LOWEST);
@@ -710,10 +712,25 @@ static void YacoinMiner(CWallet* pwallet)  // here fProofOfStake is always false
   // Make this thread recognisable as the mining thread
   RenameThread("yacoin-PoW-miner");
 
-  // Each thread has its own key and counter
-  CReserveKey reservekey(pwallet);
-
   unsigned int nExtraNonce = 0;
+
+  CWallet * pWallet = NULL;
+  pWallet = GetFirstWallet();
+
+  if (!EnsureWalletIsAvailable(pWallet, false)) {
+      LogPrintf("YacoinMiner -- Wallet not available\n");
+  }
+
+  if (pWallet == NULL)
+  {
+      LogPrintf("pWallet is NULL\n");
+      return;
+  }
+
+  // Each thread has its own key and counter
+  CReserveKey reservekey(pWallet);
+  std::shared_ptr<CReserveScript> coinbase_script;
+  pWallet->GetScriptForMining(coinbase_script);
 
   while (fGenerateBitcoins && nBlocksToGenerate != 0) {
     while (IsInitialBlockDownload() || (g_connman->GetNodeCount(CConnman::CONNECTIONS_ALL) == 0 && !fTestNet)) {
@@ -724,7 +741,7 @@ static void YacoinMiner(CWallet* pwallet)  // here fProofOfStake is always false
     if (fShutdown || !fGenerateBitcoins)  // someone shut off the miner
       break;
 
-    while (pwallet->IsLocked()) {
+    while (pWallet->IsLocked()) {
       strMintWarning = strMintMessage;
       Sleep(nMillisecondsPerSecond);
     }
@@ -737,7 +754,7 @@ static void YacoinMiner(CWallet* pwallet)  // here fProofOfStake is always false
     CBlockIndex* pindexPrev = chainActive.Tip();
 
     // Create new block
-    std::unique_ptr<CBlockTemplate> pblocktemplate(BlockAssembler().CreateNewBlock(pwallet));
+    std::unique_ptr<CBlockTemplate> pblocktemplate(BlockAssembler().CreateNewBlock(coinbase_script->reserveScript));
     if (!pblocktemplate.get()) return;
     CBlock* pblock = &pblocktemplate->block;
     if (!pblock) return;
@@ -800,7 +817,7 @@ static void YacoinMiner(CWallet* pwallet)  // here fProofOfStake is always false
         LogPrintf("target: %s\n", hashTarget.ToString());
         LogPrintf("result: %s\n", result.ToString());
         Yassert(result == pblock->GetHash());
-        if (!pblock->SignBlock(*pwalletMain))  // wallet is locked
+        if (!pblock->SignBlock(*pWallet))  // wallet is locked
         {
           strMintWarning = strMintMessage;
           break;
@@ -808,7 +825,7 @@ static void YacoinMiner(CWallet* pwallet)  // here fProofOfStake is always false
         strMintWarning = "";
 
         SetThreadPriority(THREAD_PRIORITY_NORMAL);
-        if (CheckWork(pblock, *pwalletMain, reservekey)) {
+        if (CheckWork(pblock, *pWallet, reservekey)) {
           LogPrintf(
               "\nCPUMiner : proof-of-work block found \n"
               "%s"
@@ -911,10 +928,9 @@ static void YacoinMiner(CWallet* pwallet)  // here fProofOfStake is always false
 //_____________________________________________________________________________
 
 void static ThreadYacoinMiner(void* parg) {
-  CWallet* pwallet = (CWallet*)parg;  // what kind of c++ cast is this?
   try {
     ++vnThreadsRunning[THREAD_MINER];
-    YacoinMiner(pwallet);
+    YacoinMiner();
     --vnThreadsRunning[THREAD_MINER];
   } catch (std::exception& e) {
     --vnThreadsRunning[THREAD_MINER];
@@ -934,7 +950,7 @@ void static ThreadYacoinMiner(void* parg) {
 //_____________________________________________________________________________
 
 // here we add the missing PoW mining code from 0.4.4
-void GenerateYacoins(bool fGenerate, CWallet* pwallet, int nblocks) {
+void GenerateYacoins(bool fGenerate, int nblocks) {
   fGenerateBitcoins = fGenerate;
   nLimitProcessors = gArgs.GetArg("-genproclimit", -1);
   if (nLimitProcessors == 0) fGenerateBitcoins = false;
@@ -953,7 +969,7 @@ void GenerateYacoins(bool fGenerate, CWallet* pwallet, int nblocks) {
     LogPrintf("Starting %d YacoinMiner thread%s\n", nAddThreads,
            (1 < nAddThreads) ? "s" : "");
     for (int i = 0; i < nAddThreads; ++i) {
-      if (!NewThread(ThreadYacoinMiner, pwallet))
+      if (!NewThread(ThreadYacoinMiner, nullptr))
         LogPrintf("Error: NewThread(ThreadBitcoinMiner) failed\n");
       Sleep(nTenMilliseconds);
     }

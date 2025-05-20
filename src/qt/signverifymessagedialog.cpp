@@ -6,10 +6,11 @@
 #include "guiutil.h"
 #include "dialogwindowflags.h"
 #include "init.h"
+#include "validation.h" // For strMessageMagic
 #include "main.h"
 #include "optionsmodel.h"
 #include "walletmodel.h"
-#include "wallet.h"
+#include "wallet/wallet.h"
 #include "streams.h"
 
 #include <string>
@@ -134,7 +135,7 @@ void SignVerifyMessageDialog::on_signMessageButton_SM_clicked()
     }
 
     CKey key;
-    if (!pwalletMain->GetKey(keyID, key))
+    if (!model->getPrivKey(keyID, key))
     {
         ui->statusLabel_SM->setStyleSheet("QLabel { color: red; }");
         ui->statusLabel_SM->setText(tr("Private key for the entered address is not available."));

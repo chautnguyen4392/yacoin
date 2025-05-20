@@ -5,13 +5,14 @@
 #include <vector>
 #include <map>
 
-#include "allocators.h" /* for SecureString */
+#include "support/allocators/secure.h" /* for SecureString */
 
 class OptionsModel;
 class AddressTableModel;
 class TransactionTableModel;
 class MintingTableModel;
 class CWallet;
+class CKey;
 class CKeyID;
 class CPubKey;
 class COutput;
@@ -103,9 +104,6 @@ public:
     bool dumpWallet(const QString &filename);
     bool importWallet(const QString &filename);
 
-    void getStakeStats(float &nKernelsRate, float &nCoinDaysRate);
-    void getStakeWeightFromValue(const int64_t& nTime, const int64_t& nValue, uint64_t& nWeight);
-
     // RAI object for unlocking wallet, returned by requestUnlock()
     class UnlockContext
     {
@@ -130,13 +128,13 @@ public:
     UnlockContext requestUnlock();
 
     bool getPubKey(const CKeyID &address, CPubKey& vchPubKeyOut) const;
+    bool getPrivKey(const CKeyID &address, CKey& vchPrivKeyOut) const;
     void getOutputs(const std::vector<COutPoint>& vOutpoints, std::vector<COutput>& vOutputs);
     void listCoins(std::map<QString, std::vector<COutput> >& mapCoins) const;
     bool isLockedCoin(uint256 hash, unsigned int n) const;
     void lockCoin(COutPoint& output);
     void unlockCoin(COutPoint& output);
     void listLockedCoins(std::vector<COutPoint>& vOutpts);
-    void clearOrphans();
     CWallet* getWallet();
 
 private:

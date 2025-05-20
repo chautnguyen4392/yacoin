@@ -241,6 +241,7 @@ BITCOIN_QT_CPP = \
   chain.cpp \
   chainparams.cpp \
   chainparamsbase.cpp \
+  crypto/aes.cpp \
   crypto/siphash.cpp \
   crypto/chacha20.cpp \
   crypto/sha1.cpp \
@@ -263,6 +264,7 @@ BITCOIN_QT_CPP = \
   policy/fees.cpp \
   pow.cpp \
   support/cleanse.cpp \
+  support/lockedpool.cpp \
   init.cpp \
   dbwrapper.cpp \
   txdb.cpp \
@@ -275,10 +277,8 @@ BITCOIN_QT_CPP = \
   addrdb.cpp \
   bloom.cpp \
   threadinterrupt.cpp \
-  crypter.cpp \
   compressor.cpp \
   key.cpp \
-  db.cpp \
   fs.cpp \
   validation.cpp \
   validationinterface.cpp \
@@ -300,11 +300,9 @@ BITCOIN_QT_CPP = \
   price.cpp \
   random_nonce.cpp \
   rpctokens.cpp \
-  rpcdump.cpp \
   rpcnet.cpp \
   rpcmining.cpp \
   rpcmisc.cpp \
-  rpcwallet.cpp \
   rpcblockchain.cpp \
   rpcrawtransaction.cpp \
   script/interpreter.cpp \
@@ -319,12 +317,17 @@ BITCOIN_QT_CPP = \
   utilstrencodings.cpp \
   utilmoneystr.cpp \
   utiltime.cpp \
+  ui_interface.cpp \
   netaddress.cpp \
   timedata.cpp \
   warnings.cpp \
   txmempool.cpp \
-  wallet.cpp \
-  walletdb.cpp \
+  wallet/crypter.cpp \
+  wallet/db.cpp \
+  wallet/rpcdump.cpp \
+  wallet/rpcwallet.cpp \
+  wallet/wallet.cpp \
+  wallet/walletdb.cpp \
   noui.cpp \
   kernel.cpp \
   pbkdf2.cpp \

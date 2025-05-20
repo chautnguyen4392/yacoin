@@ -11,7 +11,7 @@
 #include "editaddressdialog.h"
 #include "optionsmodel.h"
 #include "guiutil.h"
-#include "wallet.h"
+#include "wallet/wallet.h"
 
 #include <QScrollBar>
 #include <QComboBox>
@@ -432,7 +432,6 @@ void TransactionView::clearOrphans()
     if(!model)
         return;
 
-    model->clearOrphans();
     model->getTransactionTableModel()->refresh();
     delete transactionProxyModel;
     setModel(model, false);

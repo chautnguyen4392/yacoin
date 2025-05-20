@@ -27,8 +27,9 @@
 #include "ui_interface.h"
 #include "base58.h"
 #include "bitcoinrpc.h"
-#include "db.h"
+#include "wallet/db.h"
 #include "net_processing.h"
+#include "warnings.h"
 
 #undef printf
 #include <boost/asio.hpp>
@@ -309,9 +310,6 @@ Value stop(const Array& params, bool fHelp)
             "stop <detach>\n"
             "<detach> is true or false to detach the database or not for this stop only\n"
             "Stop YaCoin server (and possibly override the detachdb config value).");
-    // Shutdown will take long enough that the response should get back
-    if (params.size() > 0)
-        bitdb.SetDetach(params[0].get_bool());
     StartShutdown();
     return "YaCoin server stopping";
 }
@@ -952,7 +950,7 @@ void JSONRequest::convertParameterObjectToArray(string method, Value& valParams)
         if(!maxtriesValue.is_null()){
             params.push_back(maxtriesValue);
         }
-    } else if (method == "getblockcount" || method == "getwalletinfo" || method == "stop") {
+    } else if (method == "getblockcount" || method == "getwalletinfo" || method == "listwallets" || method == "stop") {
         // these methods do not require any parameter
     }
 }
@@ -1145,15 +1143,7 @@ json_spirit::Value CRPCTable::execute(const std::string &strMethod, const json_s
     {
         // Execute
         Value result;
-        {
-            if (pcmd->unlocked)
-                result = pcmd->actor(params, false);
-            else 
-            {
-                LOCK2(cs_main, pwalletMain->cs_wallet);
-                result = pcmd->actor(params, false);
-            }
-        }
+        result = pcmd->actor(params, false);
         return result;
     }
     catch (std::exception& e)
@@ -1250,7 +1240,6 @@ static const CRPCCommand vRPCCommands[] =
     { "getbestblockhash",       &getbestblockhash,       true,   false },
     { "gettimechaininfo",       &gettimechaininfo,       true,   false },
     { "getblockcount",          &getblockcount,          true,   false },
-    { "getwalletinfo",          &getwalletinfo,          true,   false },
     { "getrpcinfo",             &getrpcinfo,             true,   false },
     { "setmocktime",            &setmocktime,            true,   false },
     { "getyacprice",            &getYACprice,            true,   false },
@@ -1269,6 +1258,58 @@ static const CRPCCommand vRPCCommands[] =
     { "clearbanned",            &clearbanned,            true,   true  },
     { "setnetworkactive",       &setnetworkactive,       true,   true  },
     // network end
+    // wallet start
+    { "resendwallettransactions",               &resendwallettransactions,               true,  true  },
+    { "abandontransaction",               &abandontransaction,               false,  false  }, // new
+    { "abortrescan",               &abortrescan,               false,  false  }, // new
+    { "addmultisigaddress",     &addmultisigaddress,     false,  false },
+    { "createcltvaddress",      &createcltvaddress,      false,  false }, // only for YAC
+    { "spendcltv",              &spendcltv,              false,  false }, // only for YAC
+    { "createcsvaddress",       &createcsvaddress,       false,  false }, // only for YAC
+    { "spendcsv",               &spendcsv,               false,  false }, // only for YAC
+    { "addredeemscript",        &addredeemscript,        false,  false }, // only for YAC
+    { "describeredeemscript",   &describeredeemscript,   false,  false }, // only for YAC
+    { "backupwallet",           &backupwallet,           true,   false },
+    { "dumpprivkey",            &dumpprivkey,            false,  false },
+    { "dumpwallet",             &dumpwallet,             true,   false },
+    { "encryptwallet",          &encryptwallet,          false,  false },
+    { "getaccountaddress",      &getaccountaddress,      true,   false },
+    { "getaccount",             &getaccount,             false,  false },
+    { "getaddressesbyaccount",  &getaddressesbyaccount,  true,   false },
+    { "getbalance",             &getbalance,             false,  false },
+    { "getavailablebalance",    &getavailablebalance,    false,  false }, // only for YAC
+    { "getnewaddress",          &getnewaddress,          true,   false },
+    { "getrawchangeaddress",    &getrawchangeaddress,    true,   false }, // new
+    { "getreceivedbyaccount",   &getreceivedbyaccount,   false,  false },
+    { "getreceivedbyaddress",   &getreceivedbyaddress,   false,  false },
+    { "gettransaction",         &gettransaction,         false,  false },
+    { "getunconfirmedbalance",  &getunconfirmedbalance,  false,  false }, // new
+    { "getwalletinfo",          &getwalletinfo,          true,   false },
+    { "importprivkey",          &importprivkey,          false,  false },
+    { "importwallet",           &importwallet,           false,  false },
+    { "importaddress",          &importaddress,          false,  true  },
+    { "importpubkey",           &importpubkey,           false,  true  }, // new
+    { "keypoolrefill",          &keypoolrefill,          true,   false },
+    { "listaccounts",           &listaccounts,           false,  false },
+    { "listaddressgroupings",   &listaddressgroupings,   false,  false },
+    { "listreceivedbyaddress",  &listreceivedbyaddress,  false,  false },
+    { "listreceivedbyaccount",  &listreceivedbyaccount,  false,  false },
+    { "listsinceblock",         &listsinceblock,         false,  false },
+    { "listtransactions",       &listtransactions,       false,  false },
+    { "listunspent",            &listunspent,            false,  false },
+    { "listwallets",            &listwallets,            true,   false }, // new
+    { "move",                   &movecmd,                false,  false },
+    { "sendfrom",               &sendfrom,               false,  false },
+    { "sendmany",               &sendmany,               false,  false },
+    { "sendtoaddress",          &sendtoaddress,          false,  false },
+    { "setaccount",             &setaccount,             true,   false },
+    { "settxfee",               &settxfee,               false,  false },
+    { "signmessage",            &signmessage,            false,  false },
+    { "walletlock",             &walletlock,             true,   false },
+    { "walletpassphrasechange", &walletpassphrasechange, false,  false },
+    { "walletpassphrase",       &walletpassphrase,       true,   false },
+    { "timelockcoins",          &timelockcoins,          false,  false }, // only for YAC
+    // wallet end
     { "getdifficulty",          &getdifficulty,          true,   false },
     { "getinfo",                &getinfo,                true,   false },
     { "getgenerate",            &getgenerate,            true,   false },
@@ -1277,61 +1318,18 @@ static const CRPCCommand vRPCCommands[] =
     { "getsubsidy",             &getsubsidy,             true,   false },
     { "gethashespersec",        &gethashespersec,        true,   false },
     { "getmininginfo",          &getmininginfo,          true,   false },
-    { "getnewaddress",          &getnewaddress,          true,   false },
-    { "getaccountaddress",      &getaccountaddress,      true,   false },
-    { "setaccount",             &setaccount,             true,   false },
-    { "getaccount",             &getaccount,             false,  false },
-    { "getaddressesbyaccount",  &getaddressesbyaccount,  true,   false },
-    { "sendtoaddress",          &sendtoaddress,          false,  false },
-    { "mergecoins",             &mergecoins,             false,  false },
-    { "getreceivedbyaddress",   &getreceivedbyaddress,   false,  false },
-    { "getreceivedbyaccount",   &getreceivedbyaccount,   false,  false },
-    { "listreceivedbyaddress",  &listreceivedbyaddress,  false,  false },
-    { "listreceivedbyaccount",  &listreceivedbyaccount,  false,  false },
-    { "backupwallet",           &backupwallet,           true,   false },
-    { "keypoolrefill",          &keypoolrefill,          true,   false },
-    { "keypoolreset",           &keypoolreset,           true,   false },
-    { "walletpassphrase",       &walletpassphrase,       true,   false },
-    { "walletpassphrasechange", &walletpassphrasechange, false,  false },
-    { "walletlock",             &walletlock,             true,   false },
-    { "encryptwallet",          &encryptwallet,          false,  false },
     { "validateaddress",        &validateaddress,        true,   false },
-    { "getbalance",             &getbalance,             false,  false },
-    { "getavailablebalance",    &getavailablebalance,    false,  false },
-    { "move",                   &movecmd,                false,  false },
-    { "sendfrom",               &sendfrom,               false,  false },
-    { "sendmany",               &sendmany,               false,  false },
-    { "addmultisigaddress",     &addmultisigaddress,     false,  false },
-	{ "createcltvaddress",     	&createcltvaddress,	     false,  false },
-	{ "spendcltv",     			&spendcltv,	     		 false,  false },
-	{ "createcsvaddress",       &createcsvaddress,       false,  false },
-	{ "spendcsv",               &spendcsv,               false,  false },
-    { "addredeemscript",        &addredeemscript,        false,  false },
-    { "describeredeemscript",   &describeredeemscript,   false,  false },
     { "getrawmempool",          &getrawmempool,          true,   false },
     { "getblock",               &getblock,               false,  false },
     { "getblockbynumber",       &getblockbynumber,       false,  false },
     { "getblocktimes",          &getblocktimes,          false,  false },
     { "getblockhash",           &getblockhash,           false,  false },
-    { "gettransaction",         &gettransaction,         false,  false },
-    { "listtransactions",       &listtransactions,       false,  false },
-    { "listaddressgroupings",   &listaddressgroupings,   false,  false },
-    { "signmessage",            &signmessage,            false,  false },
     { "verifymessage",          &verifymessage,          false,  false },
     { "getwork",                &getwork,                true,   false },
     { "getworkex",              &getworkex,              true,   false },
-    { "listaccounts",           &listaccounts,           false,  false },
-    { "settxfee",               &settxfee,               false,  false },
     { "getblocktemplate",       &getblocktemplate,       true,   false },
     { "submitblock",            &submitblock,            false,  false },
-    { "listsinceblock",         &listsinceblock,         false,  false },
-    { "dumpprivkey",            &dumpprivkey,            false,  false },
-    { "dumpwallet",             &dumpwallet,             true,   false },
-    { "importwallet",           &importwallet,           false,  false },
-    { "importprivkey",          &importprivkey,          false,  false },
-    { "importaddress",          &importaddress,          false,  true  },
     { "removeaddress",          &removeaddress,          false,  true  },
-    { "listunspent",            &listunspent,            false,  false },
     { "getrawtransaction",      &getrawtransaction,      false,  false },
     { "createrawtransaction",   &createrawtransaction,   false,  false },
     { "decoderawtransaction",   &decoderawtransaction,   false,  false },
@@ -1339,10 +1337,6 @@ static const CRPCCommand vRPCCommands[] =
     { "decodescript",           &decodescript,           false,  false },
     { "signrawtransaction",     &signrawtransaction,     false,  false },
     { "sendrawtransaction",     &sendrawtransaction,     false,  false },
-    { "checkwallet",            &checkwallet,            false,  true  },
-    { "repairwallet",           &repairwallet,           false,  true  },
-    { "resendtx",               &resendtx,               false,  true  },
-    { "makekeypair",            &makekeypair,            false,  true  },
     /** YAC_TOKEN START */
     { "issue",                  &issue,                  false,  false },
     { "transfer",               &transfer,               false,  false },
@@ -1355,9 +1349,8 @@ static const CRPCCommand vRPCCommands[] =
     { "getaddressbalance",      &getaddressbalance,      false,  false },
     { "getaddressdeltas",       &getaddressdeltas,       false,  false },
     { "getaddressutxos",        &getaddressutxos,        false,  false },
-    { "getaddresstxids",        &getaddresstxids,        false,  false },
+    { "getaddresstxids",        &getaddresstxids,        false,  false }
     /** YAC_TOKEN END */
-    { "timelockcoins",          &timelockcoins,          false,  false }
 };
 
 CRPCTable::CRPCTable()
@@ -1400,18 +1393,7 @@ Array RPCConvertValues(std::string &strMethod, const std::vector<std::string> &s
     if (strMethod == "setgenerate"            && n > 1) ConvertTo<boost::int64_t>(params[1]);
     if (strMethod == "sendtoaddress"          && n > 1) ConvertTo<double>(params[1]); // amount
     if (strMethod == "sendtoaddress"          && n > 2) ConvertTo<bool>(params[2]); // useExpiredTimelockUTXO
-    if (strMethod == "mergecoins"            && n > 0) ConvertTo<double>(params[0]);
-    if (strMethod == "mergecoins"            && n > 1) ConvertTo<double>(params[1]);
-    if (strMethod == "mergecoins"            && n > 2) ConvertTo<double>(params[2]);
     if (strMethod == "settxfee"               && n > 0) ConvertTo<double>(params[0]);
-    if (strMethod == "getreceivedbyaddress"   && n > 1) ConvertTo<boost::int64_t>(params[1]);
-    if (strMethod == "getreceivedbyaccount"   && n > 1) ConvertTo<boost::int64_t>(params[1]);
-    if (strMethod == "listreceivedbyaddress"  && n > 0) ConvertTo<boost::int64_t>(params[0]);
-    if (strMethod == "listreceivedbyaddress"  && n > 1) ConvertTo<bool>(params[1]);
-    if (strMethod == "listreceivedbyaccount"  && n > 0) ConvertTo<boost::int64_t>(params[0]);
-    if (strMethod == "listreceivedbyaccount"  && n > 1) ConvertTo<bool>(params[1]);
-    if (strMethod == "getbalance"             && n > 1) ConvertTo<boost::int64_t>(params[1]);
-    if (strMethod == "getavailablebalance"    && n > 1) ConvertTo<boost::int64_t>(params[1]);
     if (strMethod == "getblock"               && n > 1) ConvertTo<bool>(params[1]);
     if (strMethod == "getblocktimes"          && n > 0) ConvertTo<int>(params[0]);
     if (strMethod == "getblockbynumber"       && n > 0) ConvertTo<int>(params[0]);
@@ -1422,33 +1404,16 @@ Array RPCConvertValues(std::string &strMethod, const std::vector<std::string> &s
     if (strMethod == "sendfrom"               && n > 2) ConvertTo<double>(params[2]);
     if (strMethod == "sendfrom"               && n > 3) ConvertTo<bool>(params[3]);
     if (strMethod == "sendfrom"               && n > 4) ConvertTo<boost::int64_t>(params[4]);
-    if (strMethod == "gettransaction"         && n > 1) ConvertTo<bool>(params[1]);
-    if (strMethod == "listtransactions"       && n > 1) ConvertTo<boost::int64_t>(params[1]);
-    if (strMethod == "listtransactions"       && n > 2) ConvertTo<boost::int64_t>(params[2]);
-    if (strMethod == "listaccounts"           && n > 0) ConvertTo<boost::int64_t>(params[0]);
-    if (strMethod == "listaccounts"           && n > 1) ConvertTo<bool>(params[1]);
     if (strMethod == "walletpassphrase"       && n > 1) ConvertTo<boost::int64_t>(params[1]);
     if (strMethod == "walletpassphrase"       && n > 2) ConvertTo<bool>(params[2]);
     if (strMethod == "getblocktemplate"       && n > 0) ConvertTo<Object>(params[0]);
-    if (strMethod == "listsinceblock"         && n > 1) ConvertTo<boost::int64_t>(params[1]);
-    if (strMethod == "listsinceblock"         && n > 2) ConvertTo<bool>(params[2]);
     if (strMethod == "sendmany"               && n > 1) ConvertTo<Object>(params[1]);
     if (strMethod == "sendmany"               && n > 2) ConvertTo<bool>(params[2]);
     if (strMethod == "sendmany"               && n > 3) ConvertTo<boost::int64_t>(params[3]);
-    if (strMethod == "addmultisigaddress"     && n > 0) ConvertTo<boost::int64_t>(params[0]);
-    if (strMethod == "addmultisigaddress"     && n > 1) ConvertTo<Array>(params[1]);
-    if (strMethod == "createcltvaddress"      && n > 0) ConvertTo<boost::int64_t>(params[0]);
-    if (strMethod == "spendcltv"         	  && n > 2) ConvertTo<boost::int64_t>(params[2]);
-    if (strMethod == "createcsvaddress"       && n > 0) ConvertTo<boost::int64_t>(params[0]);
-    if (strMethod == "createcsvaddress"       && n > 1) ConvertTo<bool>(params[1]);
-    if (strMethod == "spendcsv"               && n > 2) ConvertTo<boost::int64_t>(params[2]);
     if (strMethod == "timelockcoins"          && n > 0) ConvertTo<double>(params[0]);         // amount
     if (strMethod == "timelockcoins"          && n > 1) ConvertTo<boost::int64_t>(params[1]); // lock_time
     if (strMethod == "timelockcoins"          && n > 2) ConvertTo<bool>(params[2]);           // isRelativeTimelock
     if (strMethod == "timelockcoins"          && n > 3) ConvertTo<bool>(params[3]);           // isBlockHeightLock
-    if (strMethod == "listunspent"            && n > 0) ConvertTo<boost::int64_t>(params[0]);
-    if (strMethod == "listunspent"            && n > 1) ConvertTo<boost::int64_t>(params[1]);
-    if (strMethod == "listunspent"            && n > 2) ConvertTo<Array>(params[2]);
     if (strMethod == "getrawtransaction"      && n > 1) ConvertTo<boost::int64_t>(params[1]);
     if (strMethod == "createrawtransaction"   && n > 0) ConvertTo<Array>(params[0]);
     if (strMethod == "createrawtransaction"   && n > 1) ConvertTo<Object>(params[1]);
@@ -1456,11 +1421,41 @@ Array RPCConvertValues(std::string &strMethod, const std::vector<std::string> &s
     if (strMethod == "createmultisig"         && n > 1) ConvertTo<Array>(params[1]);
     if (strMethod == "signrawtransaction"     && n > 1) ConvertTo<Array>(params[1], true);
     if (strMethod == "signrawtransaction"     && n > 2) ConvertTo<Array>(params[2], true);
-    if (strMethod == "keypoolrefill"          && n > 0) ConvertTo<boost::int64_t>(params[0]);
-    if (strMethod == "keypoolreset"           && n > 0) ConvertTo<boost::int64_t>(params[0]);
-    if (strMethod == "importaddress"          && n > 2) ConvertTo<bool>(params[2]);
     if (strMethod == "generatetoaddress"      && n > 2) ConvertTo<int>(params[0]);
     if (strMethod == "generatetoaddress"      && n > 2) ConvertTo<int>(params[2]);
+    /* Wallet-related RPC start */
+    if (strMethod == "addmultisigaddress"     && n > 0) ConvertTo<boost::int64_t>(params[0]);
+    if (strMethod == "addmultisigaddress"     && n > 1) ConvertTo<Array>(params[1]);
+    if (strMethod == "createcltvaddress"      && n > 0) ConvertTo<boost::int64_t>(params[0]);
+    if (strMethod == "spendcltv"              && n > 2) ConvertTo<boost::int64_t>(params[2]);
+    if (strMethod == "createcsvaddress"       && n > 0) ConvertTo<boost::int64_t>(params[0]);
+    if (strMethod == "createcsvaddress"       && n > 1) ConvertTo<bool>(params[1]);
+    if (strMethod == "spendcsv"               && n > 2) ConvertTo<boost::int64_t>(params[2]);
+    if (strMethod == "getbalance"             && n > 1) ConvertTo<boost::int64_t>(params[1]);
+    if (strMethod == "getavailablebalance"    && n > 1) ConvertTo<boost::int64_t>(params[1]);
+    if (strMethod == "getreceivedbyaccount"   && n > 1) ConvertTo<boost::int64_t>(params[1]);
+    if (strMethod == "getreceivedbyaddress"   && n > 1) ConvertTo<boost::int64_t>(params[1]);
+    if (strMethod == "gettransaction"         && n > 1) ConvertTo<bool>(params[1]);
+    if (strMethod == "importprivkey"          && n > 2) ConvertTo<bool>(params[2]);
+    if (strMethod == "importaddress"          && n > 2) ConvertTo<bool>(params[2]);
+    if (strMethod == "importaddress"          && n > 3) ConvertTo<bool>(params[3]);
+    if (strMethod == "keypoolrefill"          && n > 0) ConvertTo<boost::int64_t>(params[0]);
+    if (strMethod == "listaccounts"           && n > 0) ConvertTo<boost::int64_t>(params[0]);
+    if (strMethod == "listaccounts"           && n > 1) ConvertTo<bool>(params[1]);
+    if (strMethod == "listreceivedbyaddress"  && n > 0) ConvertTo<boost::int64_t>(params[0]);
+    if (strMethod == "listreceivedbyaddress"  && n > 1) ConvertTo<bool>(params[1]);
+    if (strMethod == "listreceivedbyaccount"  && n > 0) ConvertTo<boost::int64_t>(params[0]);
+    if (strMethod == "listreceivedbyaccount"  && n > 1) ConvertTo<bool>(params[1]);
+    if (strMethod == "listsinceblock"         && n > 1) ConvertTo<boost::int64_t>(params[1]);
+    if (strMethod == "listsinceblock"         && n > 2) ConvertTo<bool>(params[2]);
+    if (strMethod == "listsinceblock"         && n > 3) ConvertTo<bool>(params[3]);
+    if (strMethod == "listtransactions"       && n > 1) ConvertTo<boost::int64_t>(params[1]);
+    if (strMethod == "listtransactions"       && n > 2) ConvertTo<boost::int64_t>(params[2]);
+    if (strMethod == "listtransactions"       && n > 3) ConvertTo<boost::int64_t>(params[3]);
+    if (strMethod == "listunspent"            && n > 0) ConvertTo<boost::int64_t>(params[0]);
+    if (strMethod == "listunspent"            && n > 1) ConvertTo<boost::int64_t>(params[1]);
+    if (strMethod == "listunspent"            && n > 2) ConvertTo<Array>(params[2]);
+    /* Wallet-related RPC end */
     /* Network-related RPC start */
     if (strMethod == "disconnectnode"         && n > 1) ConvertTo<boost::int64_t>(params[1]); // node id
     if (strMethod == "setban"                 && n > 2) ConvertTo<boost::int64_t>(params[2]); // banTime

@@ -2,14 +2,17 @@
 #include "ui_coincontroldialog.h"
 
 #include "init.h"
+#include "base58.h"
 #include "bitcoinunits.h"
 #include "walletmodel.h"
 #include "addresstablemodel.h"
 #include "optionsmodel.h"
-#include "coincontrol.h"
+#include "wallet/coincontrol.h"
 #include "dialogwindowflags.h"
 #include "policy/policy.h"
+#include "policy/fees.h"
 #include "script/standard.h"
+#include "validation.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -458,20 +461,20 @@ void CoinControlDialog::updateLabels(WalletModel *model, QWidget* dialog)
     coinControl->ListSelected(vCoinControl);
     model->getOutputs(vCoinControl, vOutputs);
 
-    BOOST_FOREACH(const COutput& out, vOutputs)
+    for(const COutput& out : vOutputs)
     {
         // Quantity
         nQuantity++;
 
         // Amount
-        nAmount += out.tx->vout[out.i].nValue;
+        nAmount += out.tx->tx->vout[out.i].nValue;
 
         // Priority
-        dPriorityInputs += (double)out.tx->vout[out.i].nValue * (out.nDepth+1);
+        dPriorityInputs += (double)out.tx->tx->vout[out.i].nValue * (out.nDepth+1);
 
         // Bytes
         CTxDestination address;
-        if(ExtractDestination(out.tx->vout[out.i].scriptPubKey, address))
+        if(ExtractDestination(out.tx->tx->vout[out.i].scriptPubKey, address))
         {
             CPubKey pubkey;
             CKeyID *keyid = boost::get< CKeyID >(&address);
@@ -584,7 +587,7 @@ void CoinControlDialog::updateView()
     map<QString, vector<COutput> > mapCoins;
     model->listCoins(mapCoins);
 
-    BOOST_FOREACH(PAIRTYPE(QString, vector<COutput>) coins, mapCoins)
+    for(PAIRTYPE(QString, vector<COutput>) coins : mapCoins)
     {
         QTreeWidgetItem *itemWalletAddress = new QTreeWidgetItem();
         QString sWalletAddress = coins.first;
@@ -617,11 +620,10 @@ void CoinControlDialog::updateView()
         int nChildren = 0;
         int nInputSum = 0;
         uint64_t nTxWeight = 0, nTxWeightSum = 0;
-        BOOST_FOREACH(const COutput& out, coins.second)
+        for(const COutput& out : coins.second)
         {
             int nInputSize = 148; // 180 if uncompressed public key
-            nSum += out.tx->vout[out.i].nValue;
-            model->getStakeWeightFromValue(out.tx->GetTxTime(), out.tx->vout[out.i].nValue, nTxWeight);
+            nSum += out.tx->tx->vout[out.i].nValue;
             nTxWeightSum += nTxWeight;
             nChildren++;
 
@@ -634,7 +636,7 @@ void CoinControlDialog::updateView()
             // address
             CTxDestination outputAddress;
             QString sAddress = "";
-            if(ExtractDestination(out.tx->vout[out.i].scriptPubKey, outputAddress))
+            if(ExtractDestination(out.tx->tx->vout[out.i].scriptPubKey, outputAddress))
             {
                 sAddress = CBitcoinAddress(outputAddress).ToString().c_str();
 
@@ -666,14 +668,14 @@ void CoinControlDialog::updateView()
             }
 
             // amount
-            itemOutput->setText(COLUMN_AMOUNT, BitcoinUnits::format(nDisplayUnit, out.tx->vout[out.i].nValue));
-            itemOutput->setText(COLUMN_AMOUNT_INT64, strPad(QString::number(out.tx->vout[out.i].nValue), 15, " ")); // padding so that sorting works correctly
+            itemOutput->setText(COLUMN_AMOUNT, BitcoinUnits::format(nDisplayUnit, out.tx->tx->vout[out.i].nValue));
+            itemOutput->setText(COLUMN_AMOUNT_INT64, strPad(QString::number(out.tx->tx->vout[out.i].nValue), 15, " ")); // padding so that sorting works correctly
 
             // date
             itemOutput->setText(COLUMN_DATE, QDateTime::fromTime_t(out.tx->GetTxTime()).toUTC().toString("yy-MM-dd hh:mm"));
 
             // immature PoS reward
-            if (out.tx->IsCoinStake() && out.tx->GetBlocksToMaturity() > 0 && out.tx->GetDepthInMainChain() > 0) {
+            if (out.tx->tx->IsCoinStake() && out.tx->GetBlocksToMaturity() > 0 && out.tx->GetDepthInMainChain() > 0) {
               itemOutput->setBackground(COLUMN_CONFIRMATIONS, Qt::red);
               itemOutput->setDisabled(true);
             }
@@ -682,17 +684,17 @@ void CoinControlDialog::updateView()
             itemOutput->setText(COLUMN_CONFIRMATIONS, strPad(QString::number(out.nDepth), 8, " "));
 
             // priority
-            double dPriority = ((double)out.tx->vout[out.i].nValue  / (nInputSize + 78)) * (out.nDepth+1); // 78 = 2 * 34 + 10
+            double dPriority = ((double)out.tx->tx->vout[out.i].nValue  / (nInputSize + 78)) * (out.nDepth+1); // 78 = 2 * 34 + 10
             itemOutput->setText(COLUMN_PRIORITY, CoinControlDialog::getPriorityLabel(dPriority));
             itemOutput->setText(COLUMN_PRIORITY_INT64, strPad(QString::number((int64_t)dPriority), 20, " "));
-            dPrioritySum += (double)out.tx->vout[out.i].nValue  * (out.nDepth+1);
+            dPrioritySum += (double)out.tx->tx->vout[out.i].nValue  * (out.nDepth+1);
             nInputSum    += nInputSize;
 
             // List Mode Weight
             itemOutput->setText(COLUMN_WEIGHT, strPad(QString::number(nTxWeight), 8, " "));
 
             // transaction hash
-            uint256 txhash = out.tx->GetHash();
+            uint256 txhash = out.tx->tx->GetHash();
             itemOutput->setText(COLUMN_TXHASH, txhash.GetHex().c_str());
 
             // vout index

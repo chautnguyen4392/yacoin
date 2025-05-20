@@ -13,7 +13,7 @@
 #include "util.h"
 #include "kernel.h"
 
-#include "wallet.h"
+#include "wallet/wallet.h"
 
 #include <QLocale>
 #include <QList>
@@ -241,36 +241,7 @@ MintingTableModel::~MintingTableModel()
 
 void MintingTableModel::update()
 {
-    QList<uint256> updated;
-
-    // Check if there are changes to wallet map
-    {
-        TRY_LOCK(wallet->cs_wallet, lockWallet);
-        if (lockWallet && !wallet->vMintingWalletUpdated.empty())
-        {
-            BOOST_FOREACH(uint256 hash, wallet->vMintingWalletUpdated)
-            {
-                updated.append(hash);
-
-                // Also check the inputs to remove spent outputs from the table if necessary
-                CWalletTx wtx;
-                if(wallet->GetTransaction(hash, wtx))
-                {
-                    BOOST_FOREACH(const CTxIn& txin, wtx.vin)
-                    {
-                        updated.append(txin.prevout.COutPointGetHash());
-                    }
-                }
-            }
-            wallet->vMintingWalletUpdated.clear();
-        }
-    }
-
-    if(!updated.empty())
-    {
-        priv->updateWallet(updated);
-        mintingProxyModel->invalidate(); // Force deletion of empty rows
-    }
+    // Do nothing
 }
 
 void MintingTableModel::setMintingProxyModel(MintingFilterProxy *mintingProxy)
@@ -292,6 +263,7 @@ int MintingTableModel::columnCount(const QModelIndex &parent) const
 
 QVariant MintingTableModel::data(const QModelIndex &index, int role) const
 {
+    const Consensus::Params& params = Params().GetConsensus();
     if(!index.isValid())
         return QVariant();
     KernelRecord *rec = static_cast<KernelRecord*>(index.internalPointer());
@@ -363,8 +335,8 @@ QVariant MintingTableModel::data(const QModelIndex &index, int role) const
         }
         break;
       case Qt::BackgroundColorRole:
-        int minAge = nStakeMinAge / 60 / 60 / 24;
-        int maxAge = nStakeMaxAge / 60 / 60 / 24;
+        int minAge = params.nStakeMinAge / 60 / 60 / 24;
+        int maxAge = params.nStakeMaxAge / 60 / 60 / 24;
         if(rec->getAge() < minAge)
         {
             return COLOR_MINT_YOUNG;

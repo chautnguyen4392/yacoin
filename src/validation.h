@@ -66,6 +66,9 @@ static const unsigned int BLOCK_STALLING_TIMEOUT = 2;
 /** Number of headers sent in one getheaders result. We rely on the assumption that if a peer sends
  *  less than this number, we reached their tip. Changing this value is a protocol upgrade. */
 static unsigned int MAX_HEADERS_RESULTS = 2000;
+
+/** Maximum number of script-checking threads allowed */
+static const int MAX_SCRIPTCHECK_THREADS = 16;
 /** Number of blocks that can be requested at any given time from a single peer. */
 extern int MAX_BLOCKS_IN_TRANSIT_PER_PEER;
 /** Size of the "block download window": how far ahead of our current height do we fetch?
@@ -150,16 +153,18 @@ struct BlockHasher
  * Global state
  */
 extern size_t nCoinCacheUsage;
+extern CScript COINBASE_FLAGS;
 extern CCriticalSection cs_main;
-extern CCriticalSection cs_vpwalletRegistered;
-extern std::vector<CWallet*> vpwalletRegistered;
 typedef std::unordered_map<uint256, CBlockIndex*, BlockHasher> BlockMap;
 extern BlockMap mapBlockIndex;
 /** The currently-connected chain of blocks (protected by cs_main). */
 extern CChain chainActive;
 // Best header we've seen so far (used for getheaders queries' starting points).
 extern CBlockIndex *pindexBestHeader;
+extern const std::string strMessageMagic;
 extern bool fReindex;
+extern int nScriptCheckThreads;
+extern ::int64_t nTransactionFee;
 extern bool fTxIndex;
 extern bool fRequireStandard;
 extern bool fCheckBlockIndex;
@@ -177,10 +182,6 @@ extern CCoinsViewCache *pcoinsTip;
 
 /** Global variable that points to the active block tree (protected by cs_main) */
 extern CBlockTreeDB *pblocktree;
-
-// Wallet
-extern CCriticalSection cs_vpwalletRegistered;
-extern std::vector<CWallet*> vpwalletRegistered;
 
 //
 // GLOBAL VARIABLES USED FOR TOKEN MANAGEMENT SYSTEM
@@ -423,12 +424,5 @@ bool GetAddressUnspent(uint160 addressHash, int type,
 // ppcoin:
 bool GetCoinAge(const CTransaction& tx, const CCoinsViewCache &view, uint64_t& nCoinAge); // ppcoin: get transaction coin age
 bool CheckBlockSignature(const CBlock& block);
-
-/* Wallet functions */
-void RegisterWallet(CWallet* pwalletIn);
-void CloseWallets();
-void Inventory(const uint256& hash);
-void ResendWalletTransactions();
-void SyncWithWallets(const CTransaction& tx, const CBlock* pblock = NULL, bool fUpdate = false, bool fConnect = true);
 
 #endif // YACOIN_VALIDATION_H

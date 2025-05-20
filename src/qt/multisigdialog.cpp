@@ -13,13 +13,14 @@
 #include "multisiginputentry.h"
 #include "multisigdialog.h"
 #include "policy/policy.h"
+#include "policy/fees.h"
 #include "ui_multisigdialog.h"
 #include "script/script.h"
 #include "script/standard.h"
 #include "script/sign.h"
 #include "sendcoinsentry.h"
 #include "util.h"
-#include "wallet.h"
+#include "wallet/wallet.h"
 #include "walletmodel.h"
 #include "streams.h"
 #include "txdb.h"
@@ -245,7 +246,7 @@ void MultisigDialog::on_saveMultisigAddressButton_clicked()
     if(!wallet->HaveCScript(scriptID))
         wallet->AddCScript(script);
     if(!wallet->mapAddressBook.count(CBitcoinAddress(address).Get()))
-        wallet->SetAddressBookName(CBitcoinAddress(address).Get(), label);
+        wallet->SetAddressBook(CBitcoinAddress(address).Get(), label, "");
 }
 
 void MultisigDialog::clear()
@@ -560,7 +561,6 @@ void MultisigDialog::on_sendTransactionButton_clicked()
 	CValidationState state;
     if (!AcceptToMemoryPool(mempool, state, tx, &fMissingInputs))
         return;
-    SyncWithWallets(*tx, NULL, true);
     //(CInv(MSG_TX, txHash), tx);
     RelayTransaction(*tx, g_connman.get());
 }

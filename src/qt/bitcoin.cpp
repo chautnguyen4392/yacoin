@@ -11,6 +11,8 @@
 #include "init.h"
 #include "ui_interface.h"
 #include "qtipcserver.h"
+#include "policy/fees.h"
+#include "validation.h"
 
 #include <boost/thread.hpp>
 #include "scheduler.h"
@@ -259,7 +261,7 @@ int main(int argc, char *argv[])
                     splash.finish(&window);
 
                 ClientModel clientModel(&optionsModel);
-                WalletModel walletModel(pwalletMain, &optionsModel);
+                WalletModel walletModel(GetFirstWallet(), &optionsModel);
 
                 window.setClientModel(&clientModel);
                 window.setWalletModel(&walletModel);

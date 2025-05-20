@@ -1,26 +1,13 @@
-#ifndef EXPLORER_H
-    #include "explorer.h"
-#endif
+#include "explorer.h"
 #include "ui_explorer.h"
-    #include "ui_explorerBlockPage.h"
-    #include "ui_explorerTransactionPage.h"
-
-#ifndef CLIENTMODEL_H
-    #include "clientmodel.h"
-#endif
-
-#ifndef _BITCOINRPC_H_
-    #include "bitcoinrpc.h"
-#endif
-
-#ifndef GUIUTIL_H
-    #include "guiutil.h"
-#endif
-
-#ifndef BITCOIN_MAIN_H
-    #include "main.h"
-#endif
+#include "ui_explorerBlockPage.h"
+#include "ui_explorerTransactionPage.h"
+#include "clientmodel.h"
+#include "bitcoinrpc.h"
+#include "guiutil.h"
+#include "main.h"
 #include "validation.h"
+#include "wallet/wallet.h"
 //#include "guiconstants.h"
 
 //#include <QAbstractItemDelegate>
@@ -402,12 +389,6 @@ void ExplorerPage::showBlockHashLineDetails()
         const Consensus::Params& consensusParams = Params().GetConsensus();
         ReadBlockFromDisk(block, pblockindex, consensusParams);
 
-        CMerkleTx 
-            txGen( block.vtx[ 0 ] );
-
-        if( 0 == txGen.SetMerkleBranch( &block ) )  
-            pop_a_message_box( "curious?" );  
-
         std::string
             sX = BuildBlockinfoDetailsFrom( 
                                         block, 
@@ -532,14 +513,6 @@ void ExplorerPage::showTxInfoDetails( QModelIndex QMI )
             const Consensus::Params& consensusParams = Params().GetConsensus();
             ReadBlockFromDisk(block, pblockindex, consensusParams);
 
-            CMerkleTx 
-                txGen( block.vtx[ 0 ] );    // fixed it!!! Code that is inside read JSON!!!!!
-
-            if( 0 == txGen.SetMerkleBranch( &block ) )  
-            {
-                pop_a_message_box( "curious?" );  
-            }
-
             std::string
                 sX = BuildBlockinfoDetailsFrom( 
                                         block, 
@@ -616,14 +589,6 @@ void ExplorerPage::showBkInfoDetails( QModelIndex QMI )
 
         const Consensus::Params& consensusParams = Params().GetConsensus();
         ReadBlockFromDisk(block, pblockindex, consensusParams);
-
-        CMerkleTx 
-            txGen( block.vtx[ 0 ] );    // fixed it!!! Code that is inside read JSON!!!!!
-
-        if( 0 == txGen.SetMerkleBranch( &block ) )  
-        {
-            pop_a_message_box( "curious?" );  
-        }
 
         std::string
             sX = BuildBlockinfoDetailsFrom( 
@@ -2621,14 +2586,6 @@ void BlockExplorerPage::fillBlockInfoPage( int currentHeight )
     CBlock block;
     const Consensus::Params& consensusParams = Params().GetConsensus();
     ReadBlockFromDisk(block, pblockindex, consensusParams);
-
-    CMerkleTx 
-        txGen( block.vtx[ 0 ] );    // fixed it!!! Code that is inside read JSON!!!!!
-
-    if( 0 == txGen.SetMerkleBranch( &block ) )  
-    {
-        pop_a_message_box( "curious?" );  
-    }
 
     /********************************************/
     // now pblockindex & by implication, block contain all the information

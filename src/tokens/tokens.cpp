@@ -23,7 +23,7 @@
 //#include "wallet/wallet.h"
 //#include "wallet/coincontrol.h"
 //#include "wallet/wallet.h"
-#include "wallet.h"
+#include "wallet/wallet.h"
 //#include "rpc/protocol.h"
 #include "bitcoinrpc.h"
 
@@ -35,7 +35,7 @@
 #include "tokens.h"
 #include "tokendb.h"
 #include "tokentypes.h"
-#include "coincontrol.h"
+#include "wallet/coincontrol.h"
 #include "protocol.h"
 #include "utilmoneystr.h"
 #include "coins.h"
@@ -2506,11 +2506,11 @@ void GetAllMyTokens(CWallet* pwallet, std::vector<std::string>& names, int nMinC
 bool GetAllMyTokenBalances(std::map<std::string, std::vector<COutput> >& outputs, std::map<std::string, CAmount>& amounts, const int confirmations, const std::string& prefix) {
 
     // Return false if no wallet was found to compute token balances
-    if (!vpwalletRegistered.size())
+    if (!vpwallets.size())
         return false;
 
     // Get the map of tokennames to outputs
-    vpwalletRegistered[0]->AvailableTokens(outputs, true, nullptr, 1, MAX_MONEY, MAX_MONEY, 0, confirmations);
+    vpwallets[0]->AvailableTokens(outputs, true, nullptr, 1, MAX_MONEY, MAX_MONEY, 0, confirmations);
 
     // Loop through all pairs of Token Name -> vector<COutput>
     for (const auto& pair : outputs) {
@@ -2518,7 +2518,7 @@ bool GetAllMyTokenBalances(std::map<std::string, std::vector<COutput> >& outputs
             CAmount balance = 0;
             for (auto txout : pair.second) { // Compute balance of token by summing all Available Outputs
                 CTokenOutputEntry data;
-                if (GetTokenData(txout.tx->vout[txout.i].scriptPubKey, data))
+                if (GetTokenData(txout.tx->tx->vout[txout.i].scriptPubKey, data))
                     balance += data.nAmount;
             }
             amounts.insert(std::make_pair(pair.first, balance));
@@ -2531,19 +2531,19 @@ bool GetAllMyTokenBalances(std::map<std::string, std::vector<COutput> >& outputs
 bool GetMyTokenBalance(const std::string& name, CAmount& balance, const int& confirmations) {
 
     // Return false if no wallet was found to compute token balances
-    if (!vpwalletRegistered.size())
+    if (!vpwallets.size())
         return false;
 
     // Get the map of tokennames to outputs
     std::map<std::string, std::vector<COutput> > outputs;
-    vpwalletRegistered[0]->AvailableTokens(outputs, true, nullptr, 1, MAX_MONEY, MAX_MONEY, 0, confirmations);
+    vpwallets[0]->AvailableTokens(outputs, true, nullptr, 1, MAX_MONEY, MAX_MONEY, 0, confirmations);
 
     // Loop through all pairs of Token Name -> vector<COutput>
     if (outputs.count(name)) {
         auto& ref = outputs.at(name);
         for (const auto& txout : ref) {
             CTokenOutputEntry data;
-            if (GetTokenData(txout.tx->vout[txout.i].scriptPubKey, data)) {
+            if (GetTokenData(txout.tx->tx->vout[txout.i].scriptPubKey, data)) {
                 balance += data.nAmount;
             }
         }
@@ -2858,7 +2858,7 @@ bool CreateTransferTokenTransaction(CWallet* pwallet, const CCoinControl& coinCo
 bool SendTokenTransaction(CWallet* pwallet, CWalletTx& transaction, CReserveKey& reserveKey, std::pair<int, std::string>& error, std::string& txid)
 {
     CValidationState state;
-    if (!pwallet->CommitTransaction(transaction, reserveKey)) {
+    if (!pwallet->CommitTransaction(transaction, reserveKey, g_connman.get(), state)) {
         error = std::make_pair(RPC_WALLET_ERROR, strprintf("Error: The transaction %s was rejected!", transaction.GetHash().GetHex().c_str()));
         return false;
     }
@@ -2870,8 +2870,8 @@ bool SendTokenTransaction(CWallet* pwallet, CWalletTx& transaction, CReserveKey&
 bool VerifyWalletHasToken(const std::string& token_name, std::pair<int, std::string>& pairError)
 {
     CWallet* pwallet;
-    if (vpwalletRegistered.size() > 0)
-        pwallet = vpwalletRegistered[0];
+    if (vpwallets.size() > 0)
+        pwallet = vpwallets[0];
     else {
         pairError = std::make_pair(RPC_WALLET_ERROR, strprintf("Wallet not found. Can't verify if it contains: %s", token_name));
         return false;
