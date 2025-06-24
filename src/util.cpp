@@ -2,8 +2,9 @@
 // Copyright (c) 2009-2012 The Bitcoin developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
-#ifdef _MSC_VER
-    #include "msvc_warnings.push.h"
+
+#if defined(HAVE_CONFIG_H)
+#include "config/yacoin-config.h"
 #endif
 
 #include "util.h"
@@ -1109,35 +1110,21 @@ int GetNumCores()
 //#endif
 }
 
+std::string CopyrightHolders(const std::string& strPrefix)
+{
+    std::string strCopyrightHolders = strPrefix + strprintf(_(COPYRIGHT_HOLDERS), _(COPYRIGHT_HOLDERS_SUBSTITUTION));
+
+    // Check for untranslated substitution to make sure Bitcoin Core copyright is not removed by accident
+    if (strprintf(COPYRIGHT_HOLDERS, COPYRIGHT_HOLDERS_SUBSTITUTION).find("Yacoin Core") == std::string::npos) {
+        strCopyrightHolders += "\n" + strPrefix + "The Yacoin Core developers";
+    }
+    return strCopyrightHolders;
+}
+
 // Obtain the application startup time (used for uptime calculation)
 int64_t GetStartupTime()
 {
     return nStartupTime;
-}
-
-string FormatVersion(int nVersion)
-{
-    if (nVersion%100 == 0)
-        return strprintf("%d.%d.%d", nVersion/1000000, (nVersion/10000)%100, (nVersion/100)%100);
-    else
-        return strprintf("%d.%d.%d.%d", nVersion/1000000, (nVersion/10000)%100, (nVersion/100)%100, nVersion%100);
-}
-
-string FormatFullVersion()
-{
-    return CLIENT_BUILD;
-}
-
-// Format the subversion field according to BIP 14 spec (https://en.bitcoin.it/wiki/BIP_0014)
-std::string FormatSubVersion(const std::string& name, int nClientVersion, const std::vector<std::string>& comments)
-{
-    std::ostringstream ss;
-    ss << "/";
-    ss << name << ":" << FormatVersion(nClientVersion);
-    if (!comments.empty())
-        ss << "(" << boost::algorithm::join(comments, "; ") << ")";
-    ss << "/";
-    return ss.str();
 }
 
 bool NewThread(void(*pfn)(void*), void* parg)

@@ -3,6 +3,11 @@
 // Copyright (c) 2017-2025 The Yacoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
+#if defined(HAVE_CONFIG_H)
+#include "config/yacoin-config.h"
+#endif
+
 #include "init.h"
 
 #include "chain.h"
@@ -346,7 +351,7 @@ bool static Bind(const CService &addr, bool fError = true)
 }
 
 // Core-specific options shared between UI and daemon
-std::string HelpMessage()
+std::string HelpMessage(HelpMessageMode mode)
 {
     // When adding new options to the categories, please keep and ensure alphabetical ordering.
     // Do not translate _(...) -help-debug options, Many technical terms, and only a very small audience, so is unnecessary stress to translators.
@@ -355,16 +360,18 @@ std::string HelpMessage()
     strUsage += HelpMessageOpt("-version", _("Print version and exit"));
     strUsage += HelpMessageOpt("-conf=<file>", strprintf(_("Specify configuration file (default: %s)"), YACOIN_CONF_FILENAME));
     strUsage += HelpMessageOpt("-pid=<file>", strprintf(_("Specify pid file (default: %s)"), YACOIN_PID_FILENAME));
+    if (mode == HMM_BITCOIND)
+    {
+        strUsage += HelpMessageOpt("-daemon", _("Run in the background as a daemon and accept commands"));
+    }
     strUsage += HelpMessageOpt("-datadir=<dir>", _("Specify data directory"));
     strUsage += HelpMessageOpt("-blocknotify=<cmd>", _("Execute command when the best block changes (%s in cmd is replaced by block hash)"));
     strUsage += HelpMessageOpt("-blocksonly", strprintf(_("Whether to operate in a blocks only mode (default: %u)"), DEFAULT_BLOCKSONLY));
-#if !defined(WIN32) && !defined(QT_GUI)
-    strUsage += HelpMessageOpt("-daemon", _("Run in the background as a daemon and accept commands"));
-#endif
     strUsage += HelpMessageOpt("-dbcache=<n>", _("Set database cache size in megabytes (default: 25)"));
     strUsage += HelpMessageOpt("-loadblock=<file>", _("Imports blocks from external blk000??.dat file on startup"));
     strUsage += HelpMessageOpt("-maxorphantx=<n>", strprintf(_("Keep at most <n> unconnectable transactions in memory (default: %u)"), DEFAULT_MAX_ORPHAN_TRANSACTIONS));
-    strUsage += HelpMessageOpt("-par=<n>", _("Set the number of script verification threads (1-16, 0=auto, default: 0)"));
+    strUsage += HelpMessageOpt("-par=<n>", strprintf(_("Set the number of script verification threads (%u to %d, 0 = auto, <0 = leave that many cores free, default: %d)"),
+            -GetNumCores(), MAX_SCRIPTCHECK_THREADS, DEFAULT_SCRIPTCHECK_THREADS));
     strUsage += HelpMessageOpt("-reindex-fast", _("Rebuild chain state and block index from the blk*.dat files on disk without recalculating block hash"));
     strUsage += HelpMessageOpt("-reindex", _("Rebuild chain state and block index from the blk*.dat files on disk"));
     strUsage += HelpMessageOpt("-txindex", strprintf(_("Maintain a full transaction index, used by the getrawtransaction rpc call (default: %u)"), DEFAULT_TXINDEX));
@@ -439,8 +446,8 @@ std::string HelpMessage()
     strUsage += HelpMessageOpt("-rpcsslciphers=<ciphers>", _("Acceptable ciphers (default: TLSv1+HIGH:!SSLv2:!aNULL:!eNULL:!AH:!3DES:@STRENGTH)"));
 
     strUsage += HelpMessageGroup(_("Other options:"));
-    strUsage += HelpMessageOpt("-tokenindex", _("Keep an index of tokens. Requires a -reindex-token."));
-    strUsage += HelpMessageOpt("-addressindex", _("Maintain a full address index, used to query for the balance, txids and unspent outputs for addresses. Require a -reindex-token or -reindex-blockindex"));
+    strUsage += HelpMessageOpt("-tokenindex", _("Keep an index of tokens. Requires a -reindex-fast or -reindex."));
+    strUsage += HelpMessageOpt("-addressindex", _("Maintain a full address index, used to query for the balance, txids and unspent outputs for addresses. Require a -reindex-fast or -reindex"));
     strUsage += HelpMessageOpt("-initSyncDownloadTimeout=<n>", _("Headers/block download timeout in seconds (default: 600)"));
     strUsage += HelpMessageOpt("-initSyncMaximumBlocksInDownloadPerPeer=<n>", _("Maximum number of blocks being downloaded at a time from one peer (default: 500)"));
     strUsage += HelpMessageOpt("-initSyncBlockDownloadWindow=<n>", _("Block download windows (default: initSyncMaximumBlocksInDownloadPerPeer * 64)"));
@@ -471,6 +478,28 @@ std::string HelpMessage()
     strUsage += HelpMessageOpt("-hashcalcthreads=N", strprintf("Set the number of threads which calculate hash (maximum threads = number of cpu cores, default: %d)", (int)boost::thread::hardware_concurrency() - 1));
 
     return strUsage;
+}
+
+std::string LicenseInfo()
+{
+    const std::string URL_SOURCE_CODE = "<https://github.com/yacoin/yacoin>";
+    const std::string URL_WEBSITE = "<https://yacoin.org>";
+
+    return CopyrightHolders(strprintf(_("Copyright (C) %i-%i"), 2013, COPYRIGHT_YEAR) + " ") + "\n" +
+           "\n" +
+           strprintf(_("Please contribute if you find %s useful. "
+                       "Visit %s for further information about the software."),
+               PACKAGE_NAME, URL_WEBSITE) +
+           "\n" +
+           strprintf(_("The source code is available from %s."),
+               URL_SOURCE_CODE) +
+           "\n" +
+           "\n" +
+           _("This is experimental software.") + "\n" +
+           strprintf(_("Distributed under the MIT software license, see the accompanying file %s or %s"), "COPYING", "<https://opensource.org/licenses/MIT>") + "\n" +
+           "\n" +
+           strprintf(_("This product includes software developed by the OpenSSL Project for use in the OpenSSL Toolkit %s and cryptographic software written by Eric Young and UPnP software written by Thomas Bernard."), "<https://www.openssl.org>") +
+           "\n";
 }
 
 static std::string ResolveErrMsg(const char * const optname, const std::string& strBind)
@@ -606,7 +635,7 @@ bool AppInitParameterInteraction()
 //        return InitError(strprintf(_("-maxmempool must be at least %d MB"), std::ceil(nMempoolSizeMin / 1000000.0)));
 
     // -par=0 means autodetect, but nScriptCheckThreads==0 means no concurrency
-    nScriptCheckThreads = (int)(gArgs.GetArg("-par", 0));
+    nScriptCheckThreads = gArgs.GetArg("-par", DEFAULT_SCRIPTCHECK_THREADS);
     if (nScriptCheckThreads == 0)
         nScriptCheckThreads = GetNumCores();
     if (nScriptCheckThreads <= 1)
@@ -1089,8 +1118,7 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
         bool fReset = fReindex;
         std::string strLoadError;
 
-        // YACOIN TODO ADD SPINNER OR PROGRESS BAR
-        uiInterface.InitMessage(_("<b>Loading block index, this may take several minutes...</b>"));
+        uiInterface.InitMessage(_("Loading block index..."));
 
         nStart = GetTimeMillis();
         do
@@ -1277,24 +1305,21 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
 
         if (!fLoaded && !fRequestShutdown) {
             // first suggest a reindex
-//            if (!fReset) {
-//                bool fRet = uiInterface.ThreadSafeQuestion(
-//                    strLoadError + ".\n\n" + _("Do you want to rebuild the block database now?"),
-//                    strLoadError + ".\nPlease restart with -reindex-fast or -reindex to recover.",
-//                    "", CClientUIInterface::MSG_ERROR | CClientUIInterface::BTN_ABORT);
-//                if (fRet) {
-//                    fReindex = true;
-//                    fRequestShutdown = false;
-//                } else {
-//                    LogPrintf("Aborted block database rebuild. Exiting.\n");
-//                    return false;
-//                }
-//            } else {
-//                return InitError(strLoadError);
-//            }
-            // TODO: Support UI interface for user prompt
-            strLoadError += ".\nPlease restart with -reindex-onlyheadersync (takes a few minutes) or -reindex-token (takes around 6->9 hours) or -reindex-blockindex (takes very long time, around 24->48 hours) to recover.";
-            return InitError(strLoadError);
+            if (!fReset) {
+                bool fRet = uiInterface.ThreadSafeQuestion(
+                    strLoadError + ".\n\n" + _("Do you want to rebuild the block database now?"),
+                    strLoadError + ".\nPlease restart with -reindex-fast (takes around 30->60 minutes) or -reindex (takes very long time, around 24->48 hours) to recover.",
+                    "", CClientUIInterface::MSG_ERROR | CClientUIInterface::BTN_ABORT);
+                if (fRet) {
+                    fReindex = true;
+                    fRequestShutdown = false;
+                } else {
+                    LogPrintf("Aborted block database rebuild. Exiting.\n");
+                    return false;
+                }
+            } else {
+                return InitError(strLoadError);
+            }
         }
     }
 
@@ -1330,6 +1355,9 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
     // -reindex
     if (fReindex) {
         int nFile = 0;
+        std::string reindexMessage = fReindexFast ? "Reindexing block index and chainstate in fast mode ..." : fReindex ? "Reindexing block index and chainstate in slow mode ..." : "";
+        uiInterface.InitMessage(reindexMessage);
+        LogPrintf("%s\n", reindexMessage);
         while (true) {
             CDiskBlockPos pos(nFile, 0);
             if (!fs::exists(GetBlockPosFilename(pos, "blk")))
@@ -1465,7 +1493,7 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
 
     // ********************************************************* Step 12: finished
 
-    uiInterface.InitMessage(_("<b>Done loading</b>"));
+    uiInterface.InitMessage(_("Done loading"));
     LogPrintf("Done loading\n");
 
     if (!strErrors.str().empty())
@@ -1575,7 +1603,7 @@ bool AppInit(int argc, char* argv[])
                     "  yacoind [options] help                " + _("List commands") + "\n" +
                     "  yacoind [options] help <command>      " + _("Get help for a command") + "\n";
 
-            strUsage += "\n" + HelpMessage();
+            strUsage += "\n" + HelpMessage(HMM_BITCOIND);
         }
 
         fprintf(stdout, "%s", strUsage.c_str());

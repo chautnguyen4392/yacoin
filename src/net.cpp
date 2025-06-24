@@ -4,7 +4,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #if defined(HAVE_CONFIG_H)
-#include "config/bitcoin-config.h"
+#include "config/yacoin-config.h"
 #endif
 
 #include "net.h"
@@ -1422,7 +1422,7 @@ void CConnman::ThreadSocketHandler()
                 }
                 else if (!pnode->fSuccessfullyConnected)
                 {
-                    LogPrintf("version handshake timeout from %d\n", pnode->GetId());
+                    LogPrintf("clientversion.handshake timeout from %d\n", pnode->GetId());
                     pnode->fDisconnect = true;
                 }
             }
@@ -1493,7 +1493,7 @@ void ThreadMapPort()
             }
         }
 
-        std::string strDesc = "Bitcoin " + FormatFullVersion();
+        std::string strDesc = "Yacoin " + FormatFullVersion();
 
         try {
             while (true) {
@@ -1743,7 +1743,7 @@ void CConnman::ThreadOpenConnections()
             return;
 
         // Add seed nodes if DNS seeds are all down (an infrastructure attack?).
-        if (addrman.size() == 0 && (GetTime() - nStart > 60)) {
+        if (addrman.size() == 0 && (GetTime() - nStart > 5)) {
             static bool done = false;
             if (!done) {
                 LogPrintf("Adding fixed seed nodes as DNS doesn't seem to be available.\n");
