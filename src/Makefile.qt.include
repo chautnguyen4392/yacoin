@@ -382,6 +382,8 @@ BITCOIN_QT_BASE_CPP = \
   compat/strnlen.cpp \
   coins.cpp \
   compressor.cpp \
+  core_read.cpp \
+  core_write.cpp \
   consensus/consensus.cpp \
   consensus/tx_verify.cpp \
   primitives/transaction.cpp \
@@ -398,6 +400,8 @@ BITCOIN_QT_BASE_CPP = \
   dbwrapper.cpp \
   txdb.cpp \
   hash.cpp \
+  httprpc.cpp \
+  httpserver.cpp \
   base58.cpp \
   clientversion.cpp \
   checkpoints.cpp \
@@ -406,7 +410,6 @@ BITCOIN_QT_BASE_CPP = \
   addrdb.cpp \
   bloom.cpp \
   threadinterrupt.cpp \
-  compressor.cpp \
   key.cpp \
   fs.cpp \
   validation.cpp \
@@ -425,15 +428,17 @@ BITCOIN_QT_BASE_CPP = \
   net_processing.cpp \
   protocol.cpp \
   pubkey.cpp \
-  bitcoinrpc.cpp \
   price.cpp \
   random_nonce.cpp \
-  rpctokens.cpp \
-  rpcnet.cpp \
-  rpcmining.cpp \
-  rpcmisc.cpp \
-  rpcblockchain.cpp \
-  rpcrawtransaction.cpp \
+  rpc/tokens.cpp \
+  rpc/net.cpp \
+  rpc/mining.cpp \
+  rpc/misc.cpp \
+  rpc/blockchain.cpp \
+  rpc/rawtransaction.cpp \
+  rpc/server.cpp \
+  rpc/protocol.cpp \
+  rpc/client.cpp \
   script/interpreter.cpp \
   script/ismine.cpp \
   script/script.cpp \
@@ -560,7 +565,7 @@ qt_yacoin_qt_LDADD = qt/libbitcoinqt.a $(LIBBITCOIN_SERVER)
 if ENABLE_WALLET
 qt_yacoin_qt_LDADD += $(LIBBITCOIN_WALLET)
 endif
-qt_yacoin_qt_LDADD += $(LIBLEVELDB) $(LIBLEVELDB_SSE42) $(LIBMEMENV) $(BOOST_LIBS) $(QT_LIBS) $(QT_DBUS_LIBS) $(QR_LIBS) \
+qt_yacoin_qt_LDADD += $(LIBUNIVALUE) $(LIBLEVELDB) $(LIBLEVELDB_SSE42) $(LIBMEMENV) $(BOOST_LIBS) $(QT_LIBS) $(QT_DBUS_LIBS) $(QR_LIBS) \
   $(PROTOBUF_LIBS) $(BDB_LIBS) $(SSL_LIBS) $(CRYPTO_LIBS) $(MINIUPNPC_LIBS) $(LIBSECP256K1) $(EVENT_PTHREADS_LIBS) $(EVENT_LIBS) -ldl -lrt
 qt_yacoin_qt_LDFLAGS = $(RELDFLAGS) $(AM_LDFLAGS) $(QT_LDFLAGS) $(LIBTOOL_APP_LDFLAGS)
 qt_yacoin_qt_LIBTOOLFLAGS = --tag CXX

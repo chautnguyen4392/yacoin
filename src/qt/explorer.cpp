@@ -1,5 +1,5 @@
 #include "explorer.h"
-#include "bitcoinrpc.h"
+//#include "rpc/bitcoinrpc.h"
 #include "clientmodel.h"
 #include "guiutil.h"
 #include "main.h"
@@ -28,10 +28,6 @@ CLastTxHash lastTxHash;
 // TODO: receive errors and debug messages through ClientModel
 
 const QSize ICON_SIZE(24, 24);
-
-using namespace json_spirit;
-extern Object blockToJSON(const CBlock &block, const CBlockIndex *blockindex,
-                          bool fPrintTransactionDetail);
 
 std::string BuildBlockinfoDetailsFrom(CBlock &block // in
                                       ,

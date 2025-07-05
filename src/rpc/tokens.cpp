@@ -5,30 +5,68 @@
 #include "tokens/tokens.h"
 #include "tokens/tokendb.h"
 
+#include "amount.h"
 #include "base58.h"
-#include "bitcoinrpc.h"
-#include "wallet/coincontrol.h"
-#include "init.h"
+#include "chain.h"
+#include "consensus/validation.h"
+#include "core_io.h"
+#include "httpserver.h"
+#include "validation.h"
+#include "net.h"
+#include "policy/feerate.h"
+#include "policy/fees.h"
+#include "policy/policy.h"
+#include "rpc/mining.h"
+#include "rpc/server.h"
+#include "script/sign.h"
 #include "script/script.h"
 #include "script/standard.h"
-#include "txdb.h"
+#include "timedata.h"
+#include "tinyformat.h"
+#include "util.h"
+#include "utilmoneystr.h"
+#include "wallet/coincontrol.h"
 #include "wallet/wallet.h"
 #include "wallet/rpcwallet.h"
 
 #include <boost/assign/list_of.hpp>
 #include <map>
 
-using namespace json_spirit;
+std::string TokenValueFromAmountString(const CAmount& amount, const int8_t units)
+{
+    bool sign = amount < 0;
+    int64_t n_abs = (sign ? -amount : amount);
+    int64_t quotient = n_abs / COIN;
+    int64_t remainder = n_abs % COIN;
+    remainder = remainder / pow(10, MAX_UNIT - units);
 
-using std::runtime_error;
-using std::string;
-using std::map;
-using std::list;
-using std::vector;
-using std::set;
-using std::pair;
-using std::max;
-using std::min;
+    if (units == 0 && remainder == 0) {
+        return strprintf("%s%d", sign ? "-" : "", quotient);
+    }
+    else {
+        return strprintf("%s%d.%0" + std::to_string(units) + "d", sign ? "-" : "", quotient, remainder);
+    }
+}
+
+std::string TokenValueFromAmount(const CAmount& amount, const std::string token_name)
+{
+
+    auto currentActiveTokenCache = GetCurrentTokenCache();
+    if (!currentActiveTokenCache)
+        throw JSONRPCError(RPC_INTERNAL_ERROR, "Token cache isn't available.");
+
+    uint8_t units = OWNER_UNITS;
+    if (!IsTokenNameAnOwner(token_name)) {
+        CNewToken tokenData;
+        if (!currentActiveTokenCache->GetTokenMetaDataIfExists(token_name, tokenData))
+            units = MAX_UNIT;
+            //throw JSONRPCError(RPC_INTERNAL_ERROR, "Couldn't load token from cache: " + token_name);
+        else
+            units = tokenData.units;
+    }
+
+    return TokenValueFromAmountString(amount, units);
+}
 
 std::string TokenActivationWarning()
 {
@@ -46,15 +84,10 @@ void safe_advance(Iter& curr, const Iter& end, Incr n)
     std::advance(curr, n);
 };
 
-Value issue(const Array& params, bool fHelp)
+UniValue issue(const JSONRPCRequest& request)
 {
-    CWallet* const pwallet = GetWalletForJSONRPCRequest();
-    if (!EnsureWalletIsAvailable(pwallet, fHelp)) {
-        return Value::null;
-    }
-
-    if (fHelp || !AreTokensDeployed() || params.size() < 1 || params.size() > 8)
-        throw runtime_error(
+    if (request.fHelp || !AreTokensDeployed() || request.params.size() < 1 || request.params.size() > 8)
+        throw std::runtime_error(
             "issue <token_name> [qty] [units] [reissuable] [has_ipfs] [ipfs_hash] [to_address] [change_address]\n"
             + TokenActivationWarning() +
             "\nIssue a YA-token, Sub-token or Unique-token.\n"
@@ -85,11 +118,16 @@ Value issue(const Array& params, bool fHelp)
             + HelpExampleCli("issue", "\"YATOKEN_NAME#UNIQUE_TOKEN\"")
         );
 
-    if (pwallet->IsLocked())
-        throw JSONRPCError(RPC_WALLET_UNLOCK_NEEDED, "Error: Please enter the wallet passphrase with walletpassphrase first.");
+    CWallet * const pwallet = GetWalletForJSONRPCRequest(request);
+    if (!EnsureWalletIsAvailable(pwallet, request.fHelp)) {
+        return NullUniValue;
+    }
+
+    LOCK2(cs_main, pwallet->cs_wallet);
+    EnsureWalletIsUnlocked(pwallet);
 
     // Check token name and infer tokenType
-    std::string tokenName = capitalizeTokenName(params[0].get_str());
+    std::string tokenName = capitalizeTokenName(request.params[0].get_str());
 
     ETokenType tokenType;
     std::string tokenError = "";
@@ -104,30 +142,30 @@ Value issue(const Array& params, bool fHelp)
 
     // qty
     CAmount nAmount = COIN;
-    if (params.size() > 1)
-        nAmount = AmountFromValue(params[1]);
+    if (request.params.size() > 1)
+        nAmount = AmountFromValue(request.params[1]);
 
     // units
     int units = 0;
-    if (params.size() > 2)
-        units = params[2].get_int();
+    if (request.params.size() > 2)
+        units = request.params[2].get_int();
 
     // reissuable
     bool reissuable = tokenType != ETokenType::UNIQUE;
-    if (params.size() > 3)
-        reissuable = params[3].get_bool();
+    if (request.params.size() > 3)
+        reissuable = request.params[3].get_bool();
 
     // has_ipfs
     bool has_ipfs = false;
-    if (params.size() > 4)
-        has_ipfs = params[4].get_bool();
+    if (request.params.size() > 4)
+        has_ipfs = request.params[4].get_bool();
 
     // Check the ipfs
     CIDVersion cidVersion = CIDVersion::UNKNOWN;
     std::string ipfs_hash = "";
     std::string raw_multihash = "";
-    if (params.size() > 5 && has_ipfs) {
-        ipfs_hash = params[5].get_str();
+    if (request.params.size() > 5 && has_ipfs) {
+        ipfs_hash = request.params[5].get_str();
         raw_multihash = DecodeTokenData(ipfs_hash, cidVersion);
         if (cidVersion == CIDVersion::CIDv0 && raw_multihash.empty())
             throw JSONRPCError(RPC_INVALID_PARAMS, std::string("Invalid CIDv0 IPFS hash (CIDv0 must be generated by hash algorithm sha2-256). Please check with https://cid.ipfs.tech/"));
@@ -140,8 +178,8 @@ Value issue(const Array& params, bool fHelp)
 
     // to_address
     std::string address = "";
-    if (params.size() > 6)
-        address = params[6].get_str();
+    if (request.params.size() > 6)
+        address = request.params[6].get_str();
 
     if (!address.empty()) {
         CTxDestination destination = DecodeDestination(address);
@@ -170,8 +208,8 @@ Value issue(const Array& params, bool fHelp)
 
     // change_address
     std::string change_address = "";
-    if (params.size() > 7) {
-        change_address = params[7].get_str();
+    if (request.params.size() > 7) {
+        change_address = request.params[7].get_str();
         if (!change_address.empty()) {
             CTxDestination destination = DecodeDestination(change_address);
             if (!IsValidDestination(destination)) {
@@ -208,15 +246,10 @@ Value issue(const Array& params, bool fHelp)
     return txid;
 }
 
-Value transfer(const Array& params, bool fHelp)
+UniValue transfer(const JSONRPCRequest& request)
 {
-    CWallet* const pwallet = GetWalletForJSONRPCRequest();
-    if (!EnsureWalletIsAvailable(pwallet, fHelp)) {
-        return Value::null;
-    }
-
-    if (fHelp || !AreTokensDeployed() || params.size() < 3 || params.size() > 5)
-        throw runtime_error(
+    if (request.fHelp || !AreTokensDeployed() || request.params.size() < 3 || request.params.size() > 5)
+        throw std::runtime_error(
                 "transfer <token_name> [qty] <to_address> [change_address] [token_change_address]\n"
                 + TokenActivationWarning() +
                 "\nTransfers a quantity of an owned token to a given address"
@@ -236,27 +269,32 @@ Value transfer(const Array& params, bool fHelp)
                 + HelpExampleCli("transfer", "\"TOKEN_NAME\" 20 \"address\"")
         );
 
-    if (pwallet->IsLocked())
-        throw JSONRPCError(RPC_WALLET_UNLOCK_NEEDED, "Error: Please enter the wallet passphrase with walletpassphrase first.");
+    CWallet * const pwallet = GetWalletForJSONRPCRequest(request);
+    if (!EnsureWalletIsAvailable(pwallet, request.fHelp)) {
+        return NullUniValue;
+    }
 
-    std::string token_name = capitalizeTokenName(params[0].get_str());
+    LOCK2(cs_main, pwallet->cs_wallet);
+    EnsureWalletIsUnlocked(pwallet);
 
-    CAmount nAmount = AmountFromValue(params[1]);
+    std::string token_name = capitalizeTokenName(request.params[0].get_str());
 
-    std::string to_address = params[2].get_str();
+    CAmount nAmount = AmountFromValue(request.params[1]);
+
+    std::string to_address = request.params[2].get_str();
     CTxDestination to_dest = DecodeDestination(to_address);
     if (!IsValidDestination(to_dest)) {
         throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, std::string("Invalid Yacoin address: ") + to_address);
     }
 
     std::string yac_change_address = "";
-    if (params.size() > 3) {
-        yac_change_address = params[3].get_str();
+    if (request.params.size() > 3) {
+        yac_change_address = request.params[3].get_str();
     }
 
     std::string token_change_address = "";
-    if (params.size() > 4) {
-        token_change_address = params[4].get_str();
+    if (request.params.size() > 4) {
+        token_change_address = request.params[4].get_str();
     }
 
     CTxDestination yac_change_dest = DecodeDestination(yac_change_address);
@@ -294,15 +332,10 @@ Value transfer(const Array& params, bool fHelp)
     return txid;
 }
 
-Value transferfromaddress(const Array& params, bool fHelp)
+UniValue transferfromaddress(const JSONRPCRequest& request)
 {
-    CWallet* const pwallet = GetWalletForJSONRPCRequest();
-    if (!EnsureWalletIsAvailable(pwallet, fHelp)) {
-        return Value::null;
-    }
-
-    if (fHelp || !AreTokensDeployed() || params.size() < 4 || params.size() > 6)
-        throw runtime_error(
+    if (request.fHelp || !AreTokensDeployed() || request.params.size() < 4 || request.params.size() > 6)
+        throw std::runtime_error(
                 "transferfromaddress <token_name> <from_address> <qty> <to_address> [yac_change_address] [token_change_address]\n"
                 + TokenActivationWarning() +
                 "\nTransfer a quantity of an owned token in a specific address to a given address"
@@ -326,30 +359,36 @@ Value transferfromaddress(const Array& params, bool fHelp)
                 + HelpExampleRpc("transferfromaddress", "\"TOKEN_NAME\" \"fromaddress\" 20 \"address\"")
         );
 
-    if (pwallet->IsLocked())
-        throw JSONRPCError(RPC_WALLET_UNLOCK_NEEDED, "Error: Please enter the wallet passphrase with walletpassphrase first.");
+    CWallet * const pwallet = GetWalletForJSONRPCRequest(request);
+    if (!EnsureWalletIsAvailable(pwallet, request.fHelp)) {
+        return NullUniValue;
+    }
 
-    std::string token_name = capitalizeTokenName(params[0].get_str());
+    LOCK2(cs_main, pwallet->cs_wallet);
 
-    std::string from_address = params[1].get_str();
+    EnsureWalletIsUnlocked(pwallet);
+
+    std::string token_name = capitalizeTokenName(request.params[0].get_str());
+
+    std::string from_address = request.params[1].get_str();
 
     // Check to make sure the given from address is valid
     CTxDestination dest = DecodeDestination(from_address);
     if (!IsValidDestination(dest))
         throw JSONRPCError(RPC_INVALID_PARAMETER, std::string("From address must be valid addresses. Invalid address: ") + from_address);
 
-    CAmount nAmount = AmountFromValue(params[2]);
+    CAmount nAmount = AmountFromValue(request.params[2]);
 
-    std::string address = params[3].get_str();
+    std::string address = request.params[3].get_str();
 
     std::string yac_change_address = "";
-    if (params.size() > 6) {
-        yac_change_address = params[6].get_str();
+    if (request.params.size() > 6) {
+        yac_change_address = request.params[6].get_str();
     }
 
     std::string token_change_address = "";
-    if (params.size() > 7) {
-        token_change_address = params[7].get_str();
+    if (request.params.size() > 7) {
+        token_change_address = request.params[7].get_str();
     }
 
     CTxDestination yac_change_dest = DecodeDestination(yac_change_address);
@@ -410,15 +449,10 @@ Value transferfromaddress(const Array& params, bool fHelp)
     return txid;
 }
 
-Value reissue(const Array& params, bool fHelp)
+UniValue reissue(const JSONRPCRequest& request)
 {
-    CWallet* const pwallet = GetWalletForJSONRPCRequest();
-    if (!EnsureWalletIsAvailable(pwallet, fHelp)) {
-        return Value::null;
-    }
-
-    if (fHelp || !AreTokensDeployed() || params.size() > 7 || params.size() < 2)
-        throw runtime_error(
+    if (request.fHelp || !AreTokensDeployed() || request.params.size() > 7 || request.params.size() < 2)
+        throw std::runtime_error(
                 "reissue <token_name> <qty> [reissuable] [to_address] [change_address] [new_unit] [new_ipfs]\n"
                 + TokenActivationWarning() +
                 "\nReissues a quantity of an token to an owned address if you own the Owner Token"
@@ -442,23 +476,30 @@ Value reissue(const Array& params, bool fHelp)
                 + HelpExampleRpc("reissue", "\"TOKEN_NAME\" 20 \"true\" \"address\" \"change_address\" 6 \"Qmd286K6pohQcTKYqnS1YhWrCiS4gz7Xi34sdwMe9USZ7u\"")
         );
 
-    if (pwallet->IsLocked())
-        throw JSONRPCError(RPC_WALLET_UNLOCK_NEEDED, "Error: Please enter the wallet passphrase with walletpassphrase first.");
+    CWallet * const pwallet = GetWalletForJSONRPCRequest(request);
+    if (!EnsureWalletIsAvailable(pwallet, request.fHelp)) {
+        return NullUniValue;
+    }
+
+    LOCK2(cs_main, pwallet->cs_wallet);
+
+    // To send a transaction the wallet must be unlocked
+    EnsureWalletIsUnlocked(pwallet);
 
     // Get that paramaters
-    std::string token_name = capitalizeTokenName(params[0].get_str());
-    CAmount nAmount = AmountFromValue(params[1]);
+    std::string token_name = capitalizeTokenName(request.params[0].get_str());
+    CAmount nAmount = AmountFromValue(request.params[1]);
 
     // reissueable
     bool reissuable = true;
-    if (params.size() > 2) {
-        reissuable = params[2].get_bool();
+    if (request.params.size() > 2) {
+        reissuable = request.params[2].get_bool();
     }
 
     // to_address
     std::string address = "";
-    if (params.size() > 3)
-        address = params[3].get_str();
+    if (request.params.size() > 3)
+        address = request.params[3].get_str();
 
     if (!address.empty()) {
         CTxDestination destination = DecodeDestination(address);
@@ -487,21 +528,21 @@ Value reissue(const Array& params, bool fHelp)
 
     // change_address
     std::string changeAddress =  "";
-    if (params.size() > 4)
-        changeAddress = params[4].get_str();
+    if (request.params.size() > 4)
+        changeAddress = request.params[4].get_str();
 
     // new_units
     int newUnits = -1;
-    if (params.size() > 5) {
-        newUnits = params[5].get_int();
+    if (request.params.size() > 5) {
+        newUnits = request.params[5].get_int();
     }
 
     // new_ipfs
     std::string newipfs = "";
     CIDVersion cidVersion = CIDVersion::UNKNOWN;
     std::string raw_multihash = "";
-    if (params.size() > 6) {
-        newipfs = params[6].get_str();
+    if (request.params.size() > 6) {
+        newipfs = request.params[6].get_str();
         raw_multihash = DecodeTokenData(newipfs, cidVersion);
         if (cidVersion == CIDVersion::CIDv0 && raw_multihash.empty())
             throw JSONRPCError(RPC_INVALID_PARAMS, std::string("Invalid CIDv0 IPFS hash (CIDv0 must be generated by hash algorithm sha2-256). Please check with https://cid.ipfs.tech/"));
@@ -538,15 +579,10 @@ Value reissue(const Array& params, bool fHelp)
     return txid;
 }
 
-Value listmytokens(const Array& params, bool fHelp)
+UniValue listmytokens(const JSONRPCRequest &request)
 {
-    CWallet* const pwallet = GetWalletForJSONRPCRequest();
-    if (!EnsureWalletIsAvailable(pwallet, fHelp)) {
-        return Value::null;
-    }
-
-    if (fHelp || !AreTokensDeployed() || params.size() > 5)
-        throw runtime_error(
+    if (request.fHelp || !AreTokensDeployed() || request.params.size() > 5)
+        throw std::runtime_error(
                 "listmytokens [token] [verbose] [count] [start] (confs) \n"
                 + TokenActivationWarning() +
                 "\nReturns a list of all token that are owned by this wallet\n"
@@ -592,12 +628,16 @@ Value listmytokens(const Array& params, bool fHelp)
                   + HelpExampleCli("listmytokens", "\"TOKEN*\" true 10 20 1")
         );
 
-    if (pwallet->IsLocked())
-        throw JSONRPCError(RPC_WALLET_UNLOCK_NEEDED, "Error: Please enter the wallet passphrase with walletpassphrase first.");
+    CWallet * const pwallet = GetWalletForJSONRPCRequest(request);
+    if (!EnsureWalletIsAvailable(pwallet, request.fHelp)) {
+        return NullUniValue;
+    }
+
+    LOCK2(cs_main, pwallet->cs_wallet);
 
     std::string filter = "*";
-    if (params.size() > 0)
-        filter = params[0].get_str();
+    if (request.params.size() > 0)
+        filter = request.params[0].get_str();
 
     if (filter == "")
         filter = "*";
@@ -605,24 +645,24 @@ Value listmytokens(const Array& params, bool fHelp)
     filter = capitalizeTokenName(filter);
 
     bool verbose = false;
-    if (params.size() > 1)
-        verbose = params[1].get_bool();
+    if (request.params.size() > 1)
+        verbose = request.params[1].get_bool();
 
     size_t count = INT_MAX;
-    if (params.size() > 2) {
-        if (params[2].get_int() < 1)
+    if (request.params.size() > 2) {
+        if (request.params[2].get_int() < 1)
             throw JSONRPCError(RPC_INVALID_PARAMETER, "count must be greater than 1.");
-        count = params[2].get_int();
+        count = request.params[2].get_int();
     }
 
     long start = 0;
-    if (params.size() > 3) {
-        start = params[3].get_int();
+    if (request.params.size() > 3) {
+        start = request.params[3].get_int();
     }
 
     int confs = 0;
-    if (params.size() > 4) {
-        confs = params[4].get_int();
+    if (request.params.size() > 4) {
+        confs = request.params[4].get_int();
     }
 
     // retrieve balances
@@ -655,15 +695,15 @@ Value listmytokens(const Array& params, bool fHelp)
     safe_advance(end, balances.end(), count);
 
     // generate output
-    Object result;
+    UniValue result(UniValue::VOBJ);
     if (verbose) {
         for (; bal != end && bal != balances.end(); bal++) {
-            Object token;
+            UniValue token(UniValue::VOBJ);
             token.push_back(Pair("balance", TokenValueFromAmount(bal->second, bal->first)));
 
-            Array outpoints;
+            UniValue outpoints(UniValue::VARR);
             for (auto const& out : outputs.at(bal->first)) {
-                Object tempOut;
+                UniValue tempOut(UniValue::VOBJ);
                 tempOut.push_back(Pair("txid", out.tx->tx->GetHash().GetHex()));
                 tempOut.push_back(Pair("vout", (int)out.i));
 
@@ -735,10 +775,10 @@ Value listmytokens(const Array& params, bool fHelp)
     return result;
 }
 
-Value listtokens(const Array& params, bool fHelp)
+UniValue listtokens(const JSONRPCRequest& request)
 {
-    if (fHelp || !AreTokensDeployed() || params.size() > 4)
-        throw runtime_error(
+    if (request.fHelp || !AreTokensDeployed() || request.params.size() > 4)
+        throw std::runtime_error(
                 "listtokens [token] [verbose] [count] [start]\n"
                 + TokenActivationWarning() +
                 "\nReturns a list of all tokens in the blockchain\n"
@@ -782,8 +822,8 @@ Value listtokens(const Array& params, bool fHelp)
         throw JSONRPCError(RPC_INTERNAL_ERROR, "token db unavailable.");
 
     std::string filter = "*";
-    if (params.size() > 0)
-        filter = params[0].get_str();
+    if (request.params.size() > 0)
+        filter = request.params[0].get_str();
 
     if (filter == "")
         filter = "*";
@@ -791,32 +831,32 @@ Value listtokens(const Array& params, bool fHelp)
     filter = capitalizeTokenName(filter);
 
     bool verbose = false;
-    if (params.size() > 1)
-        verbose = params[1].get_bool();
+    if (request.params.size() > 1)
+        verbose = request.params[1].get_bool();
 
     size_t count = INT_MAX;
-    if (params.size() > 2) {
-        if (params[2].get_int() < 1)
+    if (request.params.size() > 2) {
+        if (request.params[2].get_int() < 1)
             throw JSONRPCError(RPC_INVALID_PARAMETER, "count must be greater than 1.");
-        count = params[2].get_int();
+        count = request.params[2].get_int();
     }
 
     long start = 0;
-    if (params.size() > 3) {
-        start = params[3].get_int();
+    if (request.params.size() > 3) {
+        start = request.params[3].get_int();
     }
 
     std::vector<CDatabasedTokenData> tokens;
     if (!ptokensdb->TokenDir(tokens, filter, count, start))
         throw JSONRPCError(RPC_INTERNAL_ERROR, "couldn't retrieve token directory.");
 
-    Object resultObj;
-    Array resultArr;
+    UniValue result;
+    result = verbose ? UniValue(UniValue::VOBJ) : UniValue(UniValue::VARR);
 
     for (auto data : tokens) {
         CNewToken token = data.token;
         if (verbose) {
-            Object detail;
+            UniValue detail(UniValue::VOBJ);
             ETokenType tokenType;
             std::string tokenError = "";
             if (!IsTokenNameValid(token.strName, tokenType, tokenError)) {
@@ -834,34 +874,27 @@ Value listtokens(const Array& params, bool fHelp)
                 detail.push_back(Pair("ipfs_hash_cidv0", EncodeTokenData(token.strIPFSHash, CIDVersion::CIDv0)));
                 detail.push_back(Pair("ipfs_hash_cidv1", EncodeTokenData(token.strIPFSHash, CIDVersion::CIDv1)));
             }
-            resultObj.push_back(Pair(token.strName, detail));
+            result.push_back(Pair(token.strName, detail));
         } else {
-            resultArr.push_back(token.strName);
+            result.push_back(token.strName);
         }
     }
 
-    if (verbose)
-    {
-        return resultObj;
-    }
-    else
-    {
-        return resultArr;
-    }
+    return result;
 }
 
-Value listaddressesbytoken(const Array& params, bool fHelp)
+UniValue listaddressesbytoken(const JSONRPCRequest &request)
 {
     if (!fTokenIndex) {
       return "_This rpc call is not functional unless -tokenindex is enabled "
              "in yacoin.conf. If you haven't enabled it before, in the first "
-             "time you enable it, you need to enable -reindex-token option as "
+             "time you enable it, you need to enable -reindex-fast option as "
              "well because yacoind need to build token index from the blk*.dat "
              "files on disk";
     }
 
-    if (fHelp || !AreTokensDeployed() || params.size() > 4 || params.size() < 1)
-        throw runtime_error(
+    if (request.fHelp || !AreTokensDeployed() || request.params.size() > 4 || request.params.size() < 1)
+        throw std::runtime_error(
                 "listaddressesbytoken <token_name> [onlytotal] [count] [start]\n"
                 + TokenActivationWarning() +
                 "\nReturns a list of all address that own the given token (with balances)"
@@ -885,21 +918,21 @@ Value listaddressesbytoken(const Array& params, bool fHelp)
                 + HelpExampleCli("listaddressesbytoken", "\"TOKEN_NAME\"")
         );
 
-    std::string token_name = capitalizeTokenName(params[0].get_str());
+    std::string token_name = capitalizeTokenName(request.params[0].get_str());
     bool fOnlyTotal = false;
-    if (params.size() > 1)
-        fOnlyTotal = params[1].get_bool();
+    if (request.params.size() > 1)
+        fOnlyTotal = request.params[1].get_bool();
 
     size_t count = INT_MAX;
-    if (params.size() > 2) {
-        if (params[2].get_int() < 1)
+    if (request.params.size() > 2) {
+        if (request.params[2].get_int() < 1)
             throw JSONRPCError(RPC_INVALID_PARAMETER, "count must be greater than 1.");
-        count = params[2].get_int();
+        count = request.params[2].get_int();
     }
 
     long start = 0;
-    if (params.size() > 3) {
-        start = params[3].get_int();
+    if (request.params.size() > 3) {
+        start = request.params[3].get_int();
     }
 
     if (!IsTokenNameValid(token_name))
@@ -915,7 +948,7 @@ Value listaddressesbytoken(const Array& params, bool fHelp)
         return nTotalEntries;
     }
 
-    Object result;
+    UniValue result(UniValue::VOBJ);
     for (auto& pair : vecAddressAmounts) {
         result.push_back(Pair(pair.first, TokenValueFromAmount(pair.second, token_name)));
     }
@@ -924,18 +957,18 @@ Value listaddressesbytoken(const Array& params, bool fHelp)
     return result;
 }
 
-Value listtokenbalancesbyaddress(const Array& params, bool fHelp)
+UniValue listtokenbalancesbyaddress(const JSONRPCRequest& request)
 {
     if (!fTokenIndex) {
         return "_This rpc call is not functional unless -tokenindex is enabled "
                "in yacoin.conf. If you haven't enabled it before, in the first "
-               "time you enable it, you need to enable -reindex-token option as "
+               "time you enable it, you need to enable -reindex-fast option as "
                "well because yacoind need to build token index from the blk*.dat "
                "files on disk";
     }
 
-    if (fHelp || !AreTokensDeployed() || params.size() > 4 || params.size() < 1)
-        throw runtime_error(
+    if (request.fHelp || !AreTokensDeployed() || request.params.size() > 4 || request.params.size() < 1)
+        throw std::runtime_error(
             "listtokenbalancesbyaddress <address> [onlytotal] [count] [start]\n"
             + TokenActivationWarning() +
             "\nReturns a list of all token balances for an address.\n"
@@ -959,26 +992,26 @@ Value listtokenbalancesbyaddress(const Array& params, bool fHelp)
             + HelpExampleCli("listtokenbalancesbyaddress", "\"myaddress\"")
         );
 
-    std::string address = params[0].get_str();
+    std::string address = request.params[0].get_str();
     CTxDestination destination = DecodeDestination(address);
     if (!IsValidDestination(destination)) {
         throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, std::string("Invalid Yacoin address: ") + address);
     }
 
     bool fOnlyTotal = false;
-    if (params.size() > 1)
-        fOnlyTotal = params[1].get_bool();
+    if (request.params.size() > 1)
+        fOnlyTotal = request.params[1].get_bool();
 
     size_t count = INT_MAX;
-    if (params.size() > 2) {
-        if (params[2].get_int() < 1)
+    if (request.params.size() > 2) {
+        if (request.params[2].get_int() < 1)
             throw JSONRPCError(RPC_INVALID_PARAMETER, "count must be greater than 1.");
-        count = params[2].get_int();
+        count = request.params[2].get_int();
     }
 
     long start = 0;
-    if (params.size() > 3) {
-        start = params[3].get_int();
+    if (request.params.size() > 3) {
+        start = request.params[3].get_int();
     }
 
     if (!ptokensdb)
@@ -994,10 +1027,94 @@ Value listtokenbalancesbyaddress(const Array& params, bool fHelp)
         return nTotalEntries;
     }
 
-    Object result;
+    UniValue result(UniValue::VOBJ);
     for (auto& pair : vecTokenAmounts) {
         result.push_back(Pair(pair.first, TokenValueFromAmount(pair.second, pair.first)));
     }
 
     return result;
+}
+
+UniValue gettokendata(const JSONRPCRequest& request)
+{
+    if (request.fHelp || !AreTokensDeployed() || request.params.size() != 1)
+        throw std::runtime_error(
+                "gettokendata \"token_name\"\n"
+                + TokenActivationWarning() +
+                "\nReturns tokens metadata if that token exists\n"
+
+                "\nArguments:\n"
+                "1. \"token_name\"               (string, required) the name of the token\n"
+
+                "\nResult:\n"
+                "{\n"
+                "  name: (string),\n"
+                "  amount: (number),\n"
+                "  units: (number),\n"
+                "  reissuable: (number),\n"
+                "  has_ipfs: (number),\n"
+                "  ipfs_hash: (hash), (only if has_ipfs = 1 and that data is a ipfs hash)\n"
+                "}\n"
+
+                "\nExamples:\n"
+                + HelpExampleCli("gettokendata", "\"TOKEN_NAME\"")
+                + HelpExampleRpc("gettokendata", "\"TOKEN_NAME\"")
+        );
+
+
+    std::string token_name = request.params[0].get_str();
+
+    LOCK(cs_main);
+    UniValue result (UniValue::VOBJ);
+
+    auto currentActiveTokenCache = GetCurrentTokenCache();
+    if (currentActiveTokenCache) {
+        CNewToken token;
+        if (!currentActiveTokenCache->GetTokenMetaDataIfExists(token_name, token))
+            return NullUniValue;
+
+        ETokenType tokenType;
+        std::string tokenError = "";
+        if (!IsTokenNameValid(token.strName, tokenType, tokenError)) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, std::string("Invalid token name: ") + token.strName + std::string("\nError: ") + tokenError);
+        }
+        result.push_back(Pair("name", token.strName));
+        result.push_back(Pair("token_type", ETokenTypeToString(tokenType)));
+        result.push_back(Pair("amount", TokenValueFromAmount(token.nAmount, token.strName)));
+        result.push_back(Pair("units", token.units));
+        result.push_back(Pair("reissuable", token.nReissuable));
+        result.push_back(Pair("has_ipfs", token.nHasIPFS));
+        if (token.nHasIPFS) {
+            result.push_back(Pair("ipfs_hash_cidv0", EncodeTokenData(token.strIPFSHash, CIDVersion::CIDv0)));
+            result.push_back(Pair("ipfs_hash_cidv1", EncodeTokenData(token.strIPFSHash, CIDVersion::CIDv1)));
+        }
+
+        return result;
+    }
+
+    return NullUniValue;
+}
+
+static const CRPCCommand commands[] =
+{ //  category    name                          actor (function)              okSafeMode    argNames
+  //  ----------- ------------------------      -----------------------      -----------    ----------
+#ifdef ENABLE_WALLET
+    { "tokens",   "issue",                      &issue,                      false,         {"token_name","qty","units","reissuable","has_ipfs","ipfs_hash","to_address","change_address"} },
+    { "tokens",   "listmytokens",               &listmytokens,               false,         {"token", "verbose", "count", "start", "confs"}},
+#endif
+    { "tokens",   "listtokenbalancesbyaddress", &listtokenbalancesbyaddress, false,         {"address", "onlytotal", "count", "start"} },
+    { "tokens",   "gettokendata",               &gettokendata,               true,          {"token_name"}},
+    { "tokens",   "listaddressesbytoken",       &listaddressesbytoken,       false,         {"token_name", "onlytotal", "count", "start"}},
+#ifdef ENABLE_WALLET
+    { "tokens",   "transferfromaddress",        &transferfromaddress,        false,         {"token_name", "from_address", "qty", "to_address","yac_change_address", "token_change_address"}},
+    { "tokens",   "transfer",                   &transfer,                   false,         {"token_name", "qty", "to_address", "change_address", "token_change_address"}},
+    { "tokens",   "reissue",                    &reissue,                    false,         {"token_name", "qty", "reissuable", "to_address", "change_address",  "new_units", "new_ipfs"}},
+#endif
+    { "tokens",   "listtokens",                 &listtokens,                 true,          {"token", "verbose", "count", "start"}},
+};
+
+void RegisterTokenRPCCommands(CRPCTable &t)
+{
+    for (unsigned int vcidx = 0; vcidx < ARRAYLEN(commands); vcidx++)
+        t.appendCommand(commands[vcidx].name, &commands[vcidx]);
 }
