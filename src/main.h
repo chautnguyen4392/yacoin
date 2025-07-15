@@ -43,16 +43,6 @@ class CNode;
 // END OF FUNCTIONS USED FOR TOKEN MANAGEMENT SYSTEM
 //
 
-//
-// Global state
-//
-extern int 
-    nStatisticsNumberOfBlocks2000,
-    nStatisticsNumberOfBlocks1000,
-    nStatisticsNumberOfBlocks200,
-    nStatisticsNumberOfBlocks100,
-    nStatisticsNumberOfBlocks;
-
 // PoS constants
 extern const unsigned int nOnedayOfAverageBlocks;
 
@@ -68,9 +58,6 @@ inline ::int64_t PastDrift(::int64_t nTime)
 inline ::int64_t FutureDrift(::int64_t nTime) 
     { return nTime + nMaxClockDrift; } // up to 2 hours from the future
 
-extern ::uint64_t nLastBlockTx;
-extern ::uint64_t nLastBlockSize;
-extern ::uint32_t nLastCoinStakeSearchInterval;
 extern unsigned char pchMessageStart[4];
 
 // Settings

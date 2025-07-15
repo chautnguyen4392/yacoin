@@ -160,6 +160,17 @@ struct BlockHasher
     size_t operator()(const uint256& hash) const { return hash.GetCheapHash(); }
 };
 
+class CLastTxHash {
+  public:
+    CLastTxHash();
+    void storeLasthash(const uint256 &hash);
+    uint256 retrieveLastHash(void);
+
+  private:
+    uint256 lastHash;
+};
+
+extern CLastTxHash lastTxHash;
 /**
  * Global state
  */
@@ -168,6 +179,8 @@ extern CScript COINBASE_FLAGS;
 extern CCriticalSection cs_main;
 typedef std::unordered_map<uint256, CBlockIndex*, BlockHasher> BlockMap;
 extern BlockMap mapBlockIndex;
+extern uint64_t nLastBlockTx;
+extern uint64_t nLastBlockSize;
 /** The currently-connected chain of blocks (protected by cs_main). */
 extern CChain chainActive;
 // Best header we've seen so far (used for getheaders queries' starting points).
@@ -287,8 +300,7 @@ void LoadBlockRewardAndHighestDiff();
 /** Unload database information */
 void UnloadBlockIndex();
 /** Run an instance of the script checking thread */
-//void ThreadScriptCheck();
-void ThreadScriptCheck(void* parg);
+void ThreadScriptCheck();
 // Stop the script checking threads
 void ThreadScriptCheckQuit();
 /** Check whether we are doing an initial block download (synchronizing from disk or network) */

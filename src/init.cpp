@@ -62,7 +62,6 @@
 #include <boost/filesystem/fstream.hpp>
 #include <boost/filesystem/convenience.hpp>
 #include <boost/interprocess/sync/file_lock.hpp>
-#include <boost/algorithm/string/predicate.hpp>
 #include <boost/thread.hpp>
 #include <openssl/crypto.h>
 
@@ -173,22 +172,6 @@ public:
 static CCoinsViewErrorCatcher *pcoinscatcher = nullptr;
 static std::unique_ptr<ECCVerifyHandle> globalVerifyHandle;
 
-void WaitForShutdown(boost::thread_group* threadGroup)
-{
-    bool fShutdown = ShutdownRequested();
-    // Tell the main threads to shutdown.
-    while (!fShutdown)
-    {
-        MilliSleep(200);
-        fShutdown = ShutdownRequested();
-    }
-    if (threadGroup)
-    {
-        Interrupt(*threadGroup);
-        threadGroup->join_all();
-    }
-}
-
 void Interrupt(boost::thread_group& threadGroup)
 {
     InterruptHTTPServer();
@@ -198,12 +181,15 @@ void Interrupt(boost::thread_group& threadGroup)
     InterruptTorControl();
     if (g_connman)
         g_connman->Interrupt();
+    ThreadScriptCheckQuit();
+    ThreadHashCalculationQuit();
     threadGroup.interrupt_all();
 }
 
 void Shutdown()
 {
     LogPrintf("%s: In progress...\n", __func__);
+    fShutdown = true;
     static CCriticalSection cs_Shutdown;
     TRY_LOCK(cs_Shutdown, lockShutdown);
     if (!lockShutdown)
@@ -226,14 +212,10 @@ void Shutdown()
         pwallet->Flush(false);
     }
 #endif
-
     // Stop miner threads
     GenerateYacoins(false, 0, 0);
 
     MapPort(false);
-
-    // Stop all background threads: miner, rpc, script validation and hash calculation
-    StopNode();
 
     // Because these depend on each-other, we make sure that neither can be
     // using the other before destroying them.
@@ -998,14 +980,14 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
     {
         LogPrintf("Using %u threads for script verification\n", nScriptCheckThreads);
         for (int i=0; i<nScriptCheckThreads-1; ++i)
-            NewThread(ThreadScriptCheck, NULL);
+            threadGroup.create_thread(&ThreadScriptCheck);
     }
 
     if (nHashCalcThreads)
     {
         LogPrintf("Using %u threads for hash calculation\n", nHashCalcThreads);
         for (int i=0; i<nHashCalcThreads-1; ++i)
-            NewThread(ThreadHashCalculation, NULL);
+            threadGroup.create_thread(&ThreadHashCalculation);
     }
 
     // Start the lightweight task scheduler thread
@@ -1591,9 +1573,6 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
 
     // Generate coins in the background
     GenerateYacoins(gArgs.GetBoolArg("-gen", DEFAULT_GENERATE), gArgs.GetArg("-genproclimit", DEFAULT_GENERATE_THREADS));
-    if (!NewThread(StartNode, NULL))
-        InitError(_("Error: could not start node"));
-
     // ********************************************************* Step 12: finished
 
     SetRPCWarmupFinished();
@@ -1609,178 +1588,3 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
 
     return !fRequestShutdown;
 }
-
-//////////////////////////////////////////////////////////////////////////////
-//
-// Start
-//
-#if !defined(QT_GUI) && !defined(TESTS_ENABLED)
-bool AppInit(int argc, char* argv[])
-{
-    boost::thread_group threadGroup;
-    CScheduler scheduler;
-
-    bool fRet = false;
-
-    //
-    // Parameters
-    //
-    // If Qt is used, parameters/bitcoin.conf are parsed in qt/bitcoin.cpp's main()
-    gArgs.ParseParameters(argc, argv);
-
-    // Process help and version before taking care about datadir
-    if (gArgs.IsArgSet("-?") || gArgs.IsArgSet("-h") ||  gArgs.IsArgSet("-help") || gArgs.IsArgSet("-version") || gArgs.IsArgSet("-v"))
-    {
-        std::string strUsage = "Yacoin version: " + FormatFullVersion() + " " + CLIENT_DATE + "\n";
-
-        if (gArgs.IsArgSet("-version") || gArgs.IsArgSet("-v"))
-        {
-            // Do nothing
-//            strUsage += FormatParagraph(LicenseInfo());
-        }
-        else
-        {
-            strUsage += "\n" + _("Usage:") + "\n" +
-                    "  yacoind [options]                     " + "\n" +
-                    "  yacoind [options] <command> [params]  " + _("Send command to -server or yacoind") + "\n" +
-                    "  yacoind [options] help                " + _("List commands") + "\n" +
-                    "  yacoind [options] help <command>      " + _("Get help for a command") + "\n";
-
-            strUsage += "\n" + HelpMessage(HMM_BITCOIND);
-        }
-
-        fprintf(stdout, "%s", strUsage.c_str());
-        return true;
-    }
-
-    try
-    {
-        if (!fs::is_directory(GetDataDir(false)))
-        {
-            fprintf(stderr, "Error: Specified data directory \"%s\" does not exist.\n", gArgs.GetArg("-datadir", "").c_str());
-            return false;
-        }
-
-        try
-        {
-            gArgs.ReadConfigFile(gArgs.GetArg("-conf", YACOIN_CONF_FILENAME));
-        } catch (const std::exception& e) {
-            fprintf(stderr,"Error reading configuration file: %s\n", e.what());
-            return false;
-        }
-
-        // Check for -testnet or -regtest parameter (Params() calls are only valid after this clause)
-        try {
-            SelectParams(ChainNameFromCommandLine());
-        } catch (const std::exception& e) {
-            fprintf(stderr, "Error: %s\n", e.what());
-            return false;
-        }
-
-        bool fCommandLine = false;
-        // Command-line RPC
-        for (int i = 1; i < argc; ++i)
-        {
-            if (!IsSwitchChar(argv[i][0]) && !boost::algorithm::istarts_with(argv[i], "yacoin:"))
-            {
-                fCommandLine = true;
-            }
-        }
-
-        if (fCommandLine)
-        {
-            int ret = CommandLineRPC(argc, argv);
-            exit(ret);
-        }
-        else {
-            // -server defaults to true for bitcoind but not for the GUI so do this here
-            gArgs.SoftSetBoolArg("-server", true);
-            // Set this early so that parameter interactions go to console
-            InitLogging();
-            InitParameterInteraction();
-            if (!AppInitBasicSetup())
-            {
-                // InitError will have been called with detailed error, which ends up on console
-                exit(EXIT_FAILURE);
-            }
-            if (!AppInitParameterInteraction())
-            {
-                // InitError will have been called with detailed error, which ends up on console
-                exit(EXIT_FAILURE);
-            }
-            if (!AppInitSanityChecks())
-            {
-                // InitError will have been called with detailed error, which ends up on console
-                exit(EXIT_FAILURE);
-            }
-//#if !defined(WIN32) && !defined(QT_GUI)
-//            if (fDaemon)
-//            {
-//                // Daemonize
-//                pid_t pid = fork();
-//                if (pid < 0)
-//                {
-//                    fprintf(stderr, "Error: fork() returned %d errno %d\n", pid, errno);
-//                    return false;
-//                }
-//                if (pid > 0)
-//                {
-//                    CreatePidFile(GetPidFile(), pid);
-//                    return true;
-//                }
-//
-//                pid_t sid = setsid();
-//                if (sid < 0)
-//                    fprintf(stderr, "Error: setsid() returned %d errno %d\n", sid, errno);
-//            }
-//#endif
-            if (gArgs.GetBoolArg("-daemon", false))
-            {
-                fprintf(stdout, "Yacoin server starting\n");
-
-                // Daemonize
-                if (daemon(1, 0)) { // don't chdir (1), do close FDs (0)
-                    fprintf(stderr, "Error: daemon() failed: %s\n", strerror(errno));
-                    return false;
-                }
-            }
-            // Lock data directory after daemonization
-            if (!AppInitLockDataDirectory())
-            {
-                // If locking the data directory failed, exit immediately
-                exit(EXIT_FAILURE);
-            }
-
-            fRet = AppInitMain(threadGroup, scheduler);
-        }
-    }
-    catch (const std::exception& e) {
-        PrintExceptionContinue(&e, "AppInit()");
-    } catch (...) {
-        PrintExceptionContinue(nullptr, "AppInit()");
-    }
-    if (!fRet)
-    {
-        Interrupt(threadGroup);
-        threadGroup.join_all();
-    }
-    else
-    {
-        WaitForShutdown(&threadGroup);
-    }
-    Shutdown();
-    return fRet;
-}
-
-extern void noui_connect();
-int main(int argc, char* argv[])
-{
-    SetupEnvironment();
-    nUpTimeStart = GetTime();
-
-    // Connect bitcoind signal handlers
-    noui_connect();
-
-    return (AppInit(argc, argv) ? EXIT_SUCCESS : EXIT_FAILURE);
-}
-#endif

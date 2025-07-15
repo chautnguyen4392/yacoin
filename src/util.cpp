@@ -581,6 +581,7 @@ unsigned char nFactorAtHardfork;
 ::uint32_t nEpochInterval = 21000;
 ::uint32_t nDifficultyInterval = nEpochInterval;
 bool fShutdown = false;
+bool fGenerateYacoins = false;
 bool fDaemon = false;
 bool fServer = false;
 bool fTestNet = false;
@@ -714,7 +715,6 @@ void PrintException(std::exception* pex, const char* pszThread)
     std::string message = FormatException(pex, pszThread);
     LogPrintf("\n\n************************\n%s\n", message);
     fprintf(stderr, "\n\n************************\n%s\n", message.c_str());
-    strMiscWarning = message;
     throw;
 }
 
