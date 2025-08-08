@@ -298,22 +298,26 @@ BOOST_AUTO_TEST_CASE(AreInputsStandard)
     txFrom.vout[3].nValue = 4000;
 
     // vout[4] is max sigops:
-    CScript fifteenSigops; fifteenSigops << OP_1;
-    for (unsigned i = 0; i < MAX_P2SH_SIGOPS; i++)
-        fifteenSigops << ToByteVector(key[i%3].GetPubKey());
-    fifteenSigops << OP_15 << OP_CHECKMULTISIG;
-    keystore.AddCScript(fifteenSigops);
-    txFrom.vout[4].scriptPubKey = GetScriptForDestination(CScriptID(fifteenSigops));
+    CScript twentyOneSigops; twentyOneSigops << OP_1;
+    for (unsigned i = 0; i < 16; i++)
+        twentyOneSigops << ToByteVector(key[i%3].GetPubKey());
+    twentyOneSigops << OP_16 << OP_CHECKMULTISIG;
+    twentyOneSigops << OP_1;
+    for (unsigned i = 0; i < 5; i++)
+        twentyOneSigops << ToByteVector(key[i%3].GetPubKey());
+    twentyOneSigops << OP_5 << OP_CHECKMULTISIG;
+    keystore.AddCScript(twentyOneSigops);
+    txFrom.vout[4].scriptPubKey = GetScriptForDestination(CScriptID(twentyOneSigops));
     txFrom.vout[4].nValue = 5000;
 
     // vout[5/6] are non-standard because they exceed MAX_P2SH_SIGOPS
-    CScript sixteenSigops; sixteenSigops << OP_16 << OP_CHECKMULTISIG;
-    keystore.AddCScript(sixteenSigops);
-    txFrom.vout[5].scriptPubKey = GetScriptForDestination(CScriptID(fifteenSigops));
+    CScript twentyTwoSigops; twentyTwoSigops << OP_16 << OP_CHECKMULTISIG << OP_6 << OP_CHECKMULTISIG;
+    keystore.AddCScript(twentyTwoSigops);
+    txFrom.vout[5].scriptPubKey = GetScriptForDestination(CScriptID(twentyTwoSigops));
     txFrom.vout[5].nValue = 5000;
-    CScript twentySigops; twentySigops << OP_CHECKMULTISIG;
-    keystore.AddCScript(twentySigops);
-    txFrom.vout[6].scriptPubKey = GetScriptForDestination(CScriptID(twentySigops));
+    CScript fortySigops; fortySigops << OP_CHECKMULTISIG << OP_CHECKMULTISIG;
+    keystore.AddCScript(fortySigops);
+    txFrom.vout[6].scriptPubKey = GetScriptForDestination(CScriptID(fortySigops));
     txFrom.vout[6].nValue = 6000;
 
     AddCoins(coins, txFrom, 0, uint256());
@@ -335,11 +339,11 @@ BOOST_AUTO_TEST_CASE(AreInputsStandard)
     // not testing validating signatures, so just create
     // dummy signatures that DO include the correct P2SH scripts:
     txTo.vin[3].scriptSig << OP_11 << OP_11 << std::vector<unsigned char>(oneAndTwo.begin(), oneAndTwo.end());
-    txTo.vin[4].scriptSig << std::vector<unsigned char>(fifteenSigops.begin(), fifteenSigops.end());
+    txTo.vin[4].scriptSig << std::vector<unsigned char>(twentyOneSigops.begin(), twentyOneSigops.end());
 
     BOOST_CHECK(::AreInputsStandard(txTo, coins));
-    // 22 P2SH sigops for all inputs (1 for vin[0], 6 for vin[3], 15 for vin[4]
-    BOOST_CHECK_EQUAL(GetP2SHSigOpCount(txTo, coins), 22U);
+    // 28 P2SH sigops for all inputs (1 for vin[0], 6 for vin[3], 21 for vin[4]
+    BOOST_CHECK_EQUAL(GetP2SHSigOpCount(txTo, coins), 28U);
 
     CMutableTransaction txToNonStd1;
     txToNonStd1.vout.resize(1);
@@ -348,10 +352,10 @@ BOOST_AUTO_TEST_CASE(AreInputsStandard)
     txToNonStd1.vin.resize(1);
     txToNonStd1.vin[0].prevout.n = 5;
     txToNonStd1.vin[0].prevout.hash = txFrom.GetHash();
-    txToNonStd1.vin[0].scriptSig << std::vector<unsigned char>(sixteenSigops.begin(), sixteenSigops.end());
+    txToNonStd1.vin[0].scriptSig << std::vector<unsigned char>(twentyTwoSigops.begin(), twentyTwoSigops.end());
 
     BOOST_CHECK(!::AreInputsStandard(txToNonStd1, coins));
-    BOOST_CHECK_EQUAL(GetP2SHSigOpCount(txToNonStd1, coins), 16U);
+    BOOST_CHECK_EQUAL(GetP2SHSigOpCount(txToNonStd1, coins), 22U);
 
     CMutableTransaction txToNonStd2;
     txToNonStd2.vout.resize(1);
@@ -360,10 +364,10 @@ BOOST_AUTO_TEST_CASE(AreInputsStandard)
     txToNonStd2.vin.resize(1);
     txToNonStd2.vin[0].prevout.n = 6;
     txToNonStd2.vin[0].prevout.hash = txFrom.GetHash();
-    txToNonStd2.vin[0].scriptSig << std::vector<unsigned char>(twentySigops.begin(), twentySigops.end());
+    txToNonStd2.vin[0].scriptSig << std::vector<unsigned char>(fortySigops.begin(), fortySigops.end());
 
     BOOST_CHECK(!::AreInputsStandard(txToNonStd2, coins));
-    BOOST_CHECK_EQUAL(GetP2SHSigOpCount(txToNonStd2, coins), 20U);
+    BOOST_CHECK_EQUAL(GetP2SHSigOpCount(txToNonStd2, coins), 40U);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
