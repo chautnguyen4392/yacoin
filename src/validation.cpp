@@ -3650,6 +3650,7 @@ void LoadBlockRewardAndHighestDiff()
     // Calculate minimum ease (highest difficulty)
     CBlockIndex* tmpBlockIndex = chainActive.Tip();
     ::uint32_t nMinEase = Params().GetConsensus().powLimit.GetCompact();
+
     while (tmpBlockIndex != NULL && tmpBlockIndex->nHeight >= nMainnetNewLogicBlockNumber)
     {
         if ((tmpBlockIndex->nHeight >= lastEpochChangeHeight) && (tmpBlockIndex->nHeight % nEpochInterval == 0))
