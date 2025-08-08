@@ -104,11 +104,8 @@ TestingSetup::TestingSetup(const std::string& chainName) : BasicTestingSetup(cha
 
 TestingSetup::~TestingSetup()
 {
-        std::cout << "TACA ===> ~TestingSetup() Calling interrupt_all" << std::endl;
         threadGroup.interrupt_all();
-        std::cout << "TACA ===> ~TestingSetup() Calling join_all" << std::endl;
         threadGroup.join_all();
-        std::cout << "TACA ===> ~TestingSetup() completed" << std::endl;
         GetMainSignals().FlushBackgroundCallbacks();
         GetMainSignals().UnregisterBackgroundSignalScheduler();
         g_connman.reset();
