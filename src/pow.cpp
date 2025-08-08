@@ -41,7 +41,23 @@ unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, ::int64_t 
     ::uint32_t nMinEase = params.powLimit.GetCompact();
     uint256 powTarget = params.powLimit.getuint256();
 
-    while (tmpBlockIndex != NULL && tmpBlockIndex->nHeight >= nMainnetNewLogicBlockNumber)
+    while (tmpBlockIndex != nullptr && tmpBlockIndex->nHeight >= nMainnetNewLogicBlockNumber)
+    {
+        if (nMinEase > tmpBlockIndex->nBits)
+        {
+            nMinEase = tmpBlockIndex->nBits;
+        }
+
+        tmpBlockIndex = tmpBlockIndex->pprev;
+    }
+
+    // When headers sync before block download (especially in IBD), chainActive may be unreliable for highest difficulty calculation; use the block index instead
+    if (pindexLast->phashBlock != nullptr)
+    {
+        BlockMap::iterator mi = mapBlockIndex.find(*pindexLast->phashBlock);
+        tmpBlockIndex = (*mi).second;
+    }
+    while (tmpBlockIndex != nullptr && tmpBlockIndex->nHeight >= nMainnetNewLogicBlockNumber)
     {
         if (nMinEase > tmpBlockIndex->nBits)
         {
