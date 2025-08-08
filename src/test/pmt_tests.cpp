@@ -25,7 +25,7 @@ public:
     }
 };
 
-BOOST_FIXTURE_TEST_SUITE(pmt_tests, BasicTestingSetup)
+BOOST_FIXTURE_TEST_SUITE(pmt_tests, TestChain100Setup)
 
 BOOST_AUTO_TEST_CASE(pmt_test1)
 {

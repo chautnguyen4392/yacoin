@@ -17,23 +17,11 @@
 
 #include <algorithm>
 
-// POW params
-#ifndef LOW_DIFFICULTY_FOR_DEVELOPMENT
-CBigNum bnProofOfWorkLimit(~uint256(0) >> 20);
-#else
-CBigNum bnProofOfWorkLimit(~uint256(0) >> 3);
-#endif
-
 // POS params
 CBigNum bnProofOfStakeHardLimit(~uint256(0) >> 30); // fix minimal proof of stake difficulty at 0.25
 const unsigned int nStakeTargetSpacing = 1 * nSecondsperMinute; // 1 * 60; // 1-minute stake spacing
 
 // Target params
-#ifndef LOW_DIFFICULTY_FOR_DEVELOPMENT
-static CBigNum bnInitialHashTarget(~uint256(0) >> 20);
-#else
-static CBigNum bnInitialHashTarget(~uint256(0) >> 8);
-#endif
 static const ::int64_t nTargetSpacingWorkMax = 12 * nStakeTargetSpacing; // 2-hour BS, 12 minutes!
 static const ::int64_t nTargetTimespan = 7 * 24 * 60 * 60;  // one week
 
@@ -50,7 +38,7 @@ unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, ::int64_t 
 {
     // Recalculate nMinEase corresponding to highest difficulty
     CBlockIndex* tmpBlockIndex = chainActive.Tip();
-    ::uint32_t nMinEase = bnProofOfWorkLimit.GetCompact();
+    ::uint32_t nMinEase = Params().GetConsensus().powLimit.GetCompact();
     while (tmpBlockIndex != NULL && tmpBlockIndex->nHeight >= nMainnetNewLogicBlockNumber)
     {
         if (nMinEase > tmpBlockIndex->nBits)
@@ -84,9 +72,9 @@ unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, ::int64_t 
     bnMaximumTarget *= 3;
 
     // Compare 1/3 highest difficulty with 0.4.9 min difficulty (genesis block difficulty), choose the higher
-    if (bnMaximumTarget > bnProofOfWorkLimit)
+    if (bnMaximumTarget > Params().GetConsensus().powLimit)
     {
-        bnMaximumTarget = bnProofOfWorkLimit;
+        bnMaximumTarget = Params().GetConsensus().powLimit;
     }
 
     // Choose higher difficulty (higher difficulty have smaller target)
@@ -105,8 +93,8 @@ static unsigned int GetNextTargetRequired044(const CBlockIndex* pindexLast, bool
 {
     // First three blocks will have following targets:
     // genesis (zeroth) block: bnEasiestTargetLimit
-    // first block and second block: bnInitialHashTarget (~uint256(0) >> 8)
-    CBigNum bnEasiestTargetLimit = fProofOfStake? bnProofOfStakeHardLimit : bnProofOfWorkLimit;
+    // first block and second block: Params().GetConsensus().initialHashTarget (~uint256(0) >> 8)
+    CBigNum bnEasiestTargetLimit = fProofOfStake? bnProofOfStakeHardLimit : Params().GetConsensus().powLimit;
 
     if (pindexLast == NULL)
     {
@@ -117,13 +105,13 @@ static unsigned int GetNextTargetRequired044(const CBlockIndex* pindexLast, bool
 
     if (pindexPrev->pprev == NULL)
     {
-        return bnInitialHashTarget.GetCompact(); // first block
+        return Params().GetConsensus().initialHashTarget.GetCompact(); // first block
     }
 
     const CBlockIndex* pindexPrevPrev = GetLastBlockIndex(pindexPrev->pprev, fProofOfStake);
 
     if (pindexPrevPrev->pprev == NULL)
-        return bnInitialHashTarget.GetCompact(); // second block
+        return Params().GetConsensus().initialHashTarget.GetCompact(); // second block
 
     // so there are more than 3 blocks
     ::int64_t nActualSpacing = pindexPrev->GetBlockTime() - pindexPrevPrev->GetBlockTime();
@@ -155,7 +143,7 @@ static unsigned int GetNextTargetRequired044(const CBlockIndex* pindexLast, bool
             // Hardfork happens
             if ((pindexLast->nHeight + 1) == nMainnetNewLogicBlockNumber)
             {
-                return bnProofOfWorkLimit.GetCompact();
+                return Params().GetConsensus().powLimit.GetCompact();
             }
             // Go back by what we want to be 14 days worth of blocks
             const CBlockIndex* pindexFirst = pindexLast;
@@ -271,7 +259,7 @@ unsigned int ComputeMaxBits(CBigNum bnTargetLimit, unsigned int nBase, ::int64_t
 //
 unsigned int ComputeMinWork(unsigned int nBase, ::int64_t nTime)
 {
-    return ComputeMaxBits(bnProofOfWorkLimit, nBase, nTime);
+    return ComputeMaxBits(Params().GetConsensus().powLimit, nBase, nTime);
 }
 
 //
