@@ -403,7 +403,7 @@ def set_node_times(nodes, t):
         node.setmocktime(t)
 
 def disconnect_nodes(from_connection, node_num):
-    for peer_id in [peer['id'] for peer in from_connection.getpeerinfo() if "testnode%d" % node_num in peer['subver']]:
+    for peer_id in [peer['id'] for peer in from_connection.getpeerinfo() if peer.get('subver') and "testnode%d" % node_num in peer.get('subver')]:
         try:
             from_connection.disconnectnode(nodeid=peer_id)
         except JSONRPCException as e:
@@ -414,7 +414,7 @@ def disconnect_nodes(from_connection, node_num):
                 raise
 
     # wait to disconnect
-    wait_until(lambda: [peer['id'] for peer in from_connection.getpeerinfo() if "testnode%d" % node_num in peer['subver']] == [], timeout=5)
+    wait_until(lambda: [peer['id'] for peer in from_connection.getpeerinfo() if peer.get('subver') and "testnode%d" % node_num in peer.get('subver')] == [], timeout=5)
 
 def connect_nodes(from_connection, node_num):
     ip_port = "127.0.0.1:" + str(p2p_port(node_num))
