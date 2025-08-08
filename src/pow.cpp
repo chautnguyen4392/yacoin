@@ -34,11 +34,13 @@ const CBlockIndex* GetLastBlockIndex(const CBlockIndex* pindex, bool fProofOfSta
     return pindex;
 }
 
-unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, ::int64_t nFirstBlockTime)
+unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, ::int64_t nFirstBlockTime, const Consensus::Params& params)
 {
     // Recalculate nMinEase corresponding to highest difficulty
     CBlockIndex* tmpBlockIndex = chainActive.Tip();
-    ::uint32_t nMinEase = Params().GetConsensus().powLimit.GetCompact();
+    ::uint32_t nMinEase = params.powLimit.GetCompact();
+    uint256 powTarget = params.powLimit.getuint256();
+
     while (tmpBlockIndex != NULL && tmpBlockIndex->nHeight >= nMainnetNewLogicBlockNumber)
     {
         if (nMinEase > tmpBlockIndex->nBits)
@@ -49,19 +51,17 @@ unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, ::int64_t 
         tmpBlockIndex = tmpBlockIndex->pprev;
     }
 
-    const ::int64_t nAverageBlockperiod = nStakeTargetSpacing;  // 1 minute in seconds
     ::int64_t nActualTimespan = pindexLast->GetBlockTime() - nFirstBlockTime;
-    ::int64_t nNominalTimespan = nDifficultyInterval * nAverageBlockperiod;
+    ::int64_t nNominalTimespan = nDifficultyInterval * params.nPowTargetSpacing;
     if (nActualTimespan < nNominalTimespan / 4)
         nActualTimespan = nNominalTimespan / 4;
     if (nActualTimespan > nNominalTimespan * 4)
         nActualTimespan = nNominalTimespan * 4;
 
-    // Calculate to target 1 minute/block for the previous 'epoch's 21,000 blocks
+    // Retarget: Calculate to target 1 minute/block for the previous 'epoch's 21,000 blocks
     uint256  bnPrev = CBigNum().SetCompact(pindexLast->nBits).getuint256();
     CBigNum bnPrevTarget;
     bnPrevTarget.setuint256( bnPrev );
-
     bnPrevTarget *= nActualTimespan;
     bnPrevTarget /= nNominalTimespan;
 
@@ -70,11 +70,10 @@ unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, ::int64_t 
     CBigNum bnMaximumTarget;
     bnMaximumTarget.setuint256(bnMaximum);
     bnMaximumTarget *= 3;
-
     // Compare 1/3 highest difficulty with 0.4.9 min difficulty (genesis block difficulty), choose the higher
-    if (bnMaximumTarget > Params().GetConsensus().powLimit)
+    if (bnMaximumTarget > params.powLimit)
     {
-        bnMaximumTarget = Params().GetConsensus().powLimit;
+        bnMaximumTarget = params.powLimit;
     }
 
     // Choose higher difficulty (higher difficulty have smaller target)
@@ -140,10 +139,11 @@ static unsigned int GetNextTargetRequired044(const CBlockIndex* pindexLast, bool
         }
         else // actually do a DAA
         {
+            const Consensus::Params& consensusParams = Params().GetConsensus();
             // Hardfork happens
             if ((pindexLast->nHeight + 1) == nMainnetNewLogicBlockNumber)
             {
-                return Params().GetConsensus().powLimit.GetCompact();
+                return consensusParams.powLimit.GetCompact();
             }
             // Go back by what we want to be 14 days worth of blocks
             const CBlockIndex* pindexFirst = pindexLast;
@@ -157,13 +157,12 @@ static unsigned int GetNextTargetRequired044(const CBlockIndex* pindexLast, bool
             {
                 CBlockIndex* pbi = chainActive.Genesis();
                 CBlock block;
-                const Consensus::Params& consensusParams = Params().GetConsensus();
                 ReadBlockFromDisk(block, pbi, consensusParams);
                 pindexFirst = pbi;
             }
             Yassert(pindexFirst);
 
-            return CalculateNextWorkRequired(pindexLast, pindexFirst->GetBlockTime());
+            return CalculateNextWorkRequired(pindexLast, pindexFirst->GetBlockTime(), consensusParams);
         }
     }
     else
