@@ -420,7 +420,7 @@ def connect_nodes(from_connection, node_num):
     ip_port = "127.0.0.1:" + str(p2p_port(node_num))
     from_connection.addnode(ip_port, "onetry")
     time.sleep(10)
-    # poll until clientversion.handshake complete to avoid race conditions
+    # poll until version handshake complete to avoid race conditions
     # with transaction relaying
     wait_until(lambda:  all(peer['version'] != 0 for peer in from_connection.getpeerinfo()[:-1]))
 
@@ -437,24 +437,27 @@ def sync_blocks(rpc_connections, *, wait=1, timeout=60):
         best_hash = [x.getbestblockhash() for x in rpc_connections]
         if best_hash.count(best_hash[0]) == len(rpc_connections):
             return
+        # Check that each peer has at least one connection
+        assert (all([len(x.getpeerinfo()) for x in rpc_connections]))
         time.sleep(wait)
     raise AssertionError("Block sync timed out:{}".format("".join("\n  {!r}".format(b) for b in best_hash)))
 
-def sync_mempools(rpc_connections, *, wait=1, timeout=60, flush_scheduler=True):
+def sync_mempools(rpc_connections, *, wait=1, timeout=60):
     """
     Wait until everybody has the same transactions in their memory
     pools
     """
-    stop_time = time.time() + timeout
-    while time.time() <= stop_time:
-        pool = [set(r.getrawmempool()) for r in rpc_connections]
-        if pool.count(pool[0]) == len(rpc_connections):
-            if flush_scheduler:
-                for r in rpc_connections:
-                    r.syncwithvalidationinterfacequeue()
+    while timeout > 0:
+        pool = set(rpc_connections[0].getrawmempool())
+        num_match = 1
+        for i in range(1, len(rpc_connections)):
+            if set(rpc_connections[i].getrawmempool()) == pool:
+                num_match = num_match + 1
+        if num_match == len(rpc_connections):
             return
         time.sleep(wait)
-    raise AssertionError("Mempool sync timed out:{}".format("".join("\n  {!r}".format(m) for m in pool)))
+        timeout -= wait
+    raise AssertionError("Mempool sync failed")
 
 # Transaction/Block functions
 #############################

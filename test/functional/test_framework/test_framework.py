@@ -488,9 +488,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         sync_blocks(nodes or self.nodes, **kwargs)
 
     def sync_mempools(self, nodes=None, **kwargs):
-        # TODO sync mempools in Yacoin. Not now.
-        # sync_mempools(nodes or self.nodes, **kwargs)
-        pass
+        sync_mempools(nodes or self.nodes, **kwargs)
 
     def sync_all(self, nodes=None, **kwargs):
         self.sync_blocks(nodes, **kwargs)
