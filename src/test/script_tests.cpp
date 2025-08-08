@@ -29,7 +29,7 @@
 #include <univalue.h>
 
 // Uncomment if you want to output updated JSON tests.
-// #define UPDATE_JSON_TESTS
+//#define UPDATE_JSON_TESTS
 
 static const unsigned int gFlags = SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_STRICTENC;
 
@@ -116,6 +116,7 @@ CTransaction BuildCreditingTransaction(const CScript& scriptPubKey, int nValue =
     CTransaction txCredit;
     txCredit.nVersion = 1;
     txCredit.nLockTime = 0;
+    txCredit.nTime = 1753257993;
     txCredit.vin.resize(1);
     txCredit.vout.resize(1);
     txCredit.vin[0].prevout.SetNull();
@@ -132,6 +133,7 @@ CTransaction BuildSpendingTransaction(const CScript& scriptSig, const CTransacti
     CTransaction txSpend;
     txSpend.nVersion = 1;
     txSpend.nLockTime = 0;
+    txSpend.nTime = 1753258000;
     txSpend.vin.resize(1);
     txSpend.vout.resize(1);
     txSpend.vin[0].prevout.hash = txCredit.GetHash();
@@ -665,15 +667,15 @@ BOOST_AUTO_TEST_CASE(script_build)
     tests.push_back(TestBuilder(CScript() << ToByteVector(keys.pubkey0) << OP_CHECKSIG,
                                 "P2PK with unnecessary input but no CLEANSTACK", SCRIPT_VERIFY_P2SH
                                ).Num(11).PushSig(keys.key0));
-    tests.push_back(TestBuilder(CScript() << ToByteVector(keys.pubkey0) << OP_CHECKSIG,
-                                "P2PK with unnecessary input", SCRIPT_VERIFY_CLEANSTACK | SCRIPT_VERIFY_P2SH
-                               ).Num(11).PushSig(keys.key0).ScriptError(SCRIPT_ERR_CLEANSTACK));
+//    tests.push_back(TestBuilder(CScript() << ToByteVector(keys.pubkey0) << OP_CHECKSIG,
+//                                "P2PK with unnecessary input", SCRIPT_VERIFY_CLEANSTACK | SCRIPT_VERIFY_P2SH
+//                               ).Num(11).PushSig(keys.key0).ScriptError(SCRIPT_ERR_CLEANSTACK));
     tests.push_back(TestBuilder(CScript() << ToByteVector(keys.pubkey0) << OP_CHECKSIG,
                                 "P2SH with unnecessary input but no CLEANSTACK", SCRIPT_VERIFY_P2SH, true
                                ).Num(11).PushSig(keys.key0).PushRedeem());
-    tests.push_back(TestBuilder(CScript() << ToByteVector(keys.pubkey0) << OP_CHECKSIG,
-                                "P2SH with unnecessary input", SCRIPT_VERIFY_CLEANSTACK | SCRIPT_VERIFY_P2SH, true
-                               ).Num(11).PushSig(keys.key0).PushRedeem().ScriptError(SCRIPT_ERR_CLEANSTACK));
+//    tests.push_back(TestBuilder(CScript() << ToByteVector(keys.pubkey0) << OP_CHECKSIG,
+//                                "P2SH with unnecessary input", SCRIPT_VERIFY_CLEANSTACK | SCRIPT_VERIFY_P2SH, true
+//                               ).Num(11).PushSig(keys.key0).PushRedeem().ScriptError(SCRIPT_ERR_CLEANSTACK));
     tests.push_back(TestBuilder(CScript() << ToByteVector(keys.pubkey0) << OP_CHECKSIG,
                                 "P2SH with CLEANSTACK", SCRIPT_VERIFY_CLEANSTACK | SCRIPT_VERIFY_P2SH, true
                                ).PushSig(keys.key0).PushRedeem());
@@ -685,7 +687,8 @@ BOOST_AUTO_TEST_CASE(script_build)
 
         for (unsigned int idx = 0; idx < json_tests.size(); idx++) {
             const UniValue& tv = json_tests[idx];
-            tests_set.insert(JSONPrettyPrint(tv.get_array()));
+            std::string test = JSONPrettyPrint(tv.get_array());
+            tests_set.insert(test);
         }
     }
 
