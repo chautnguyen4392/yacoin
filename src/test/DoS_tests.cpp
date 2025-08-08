@@ -63,6 +63,7 @@ BOOST_AUTO_TEST_CASE(outbound_slow_chain_eviction)
 
     peerLogic->InitializeNode(&dummyNode1);
     dummyNode1.nVersion = 1;
+    dummyNode1.nStartingHeight = 1;
     dummyNode1.fSuccessfullyConnected = true;
 
     // This test requires that we have a chain with non-zero work.
@@ -78,6 +79,7 @@ BOOST_AUTO_TEST_CASE(outbound_slow_chain_eviction)
     // Wait 21 minutes
     SetMockTime(nStartTime+21*60);
     peerLogic->SendMessages(&dummyNode1, interruptDummy); // should result in getheaders
+
     BOOST_CHECK(dummyNode1.vSendMsg.size() > 0);
     // Wait 3 more minutes
     SetMockTime(nStartTime+24*60);
@@ -106,7 +108,7 @@ void AddRandomOutboundPeer(std::vector<CNode *> &vNodes, PeerLogicValidation &pe
 BOOST_AUTO_TEST_CASE(stale_tip_peer_management)
 {
     const Consensus::Params& consensusParams = Params().GetConsensus();
-    constexpr int nMaxOutbound = 8;
+    constexpr int nMaxOutbound = 16;
     CConnman::Options options;
     options.nMaxConnections = 125;
     options.nMaxOutbound = nMaxOutbound;

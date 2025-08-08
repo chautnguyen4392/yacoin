@@ -936,12 +936,12 @@ bool IsInitialBlockDownload()
 
         CBigNum bnTarget;
         bnTarget.SetCompact(nBits);
-        CBigNum bnTargetLimit = bnProofOfWorkLimit;
+        CBigNum bnTargetLimit = Params().GetConsensus().powLimit;
         bnTargetLimit.SetCompact(bnTargetLimit.GetCompact());
 
         // NovaCoin: subsidy is cut in half every 64x multiply of PoW difficulty
         // A reasonably continuous curve is used to avoid shock to market
-        // (nSubsidyLimit / nSubsidy) ** 6 == bnProofOfWorkLimit / bnTarget
+        // (nSubsidyLimit / nSubsidy) ** 6 == Params().GetConsensus().powLimit / bnTarget
         //
         // Human readable form:
         //
@@ -3594,7 +3594,7 @@ void LoadBlockRewardAndHighestDiff()
     uint256 lastEpochChangeHash = 0;
     // Calculate minimum ease (highest difficulty)
     CBlockIndex* tmpBlockIndex = chainActive.Tip();
-    ::uint32_t nMinEase = bnProofOfWorkLimit.GetCompact();
+    ::uint32_t nMinEase = Params().GetConsensus().powLimit.GetCompact();
     while (tmpBlockIndex != NULL && tmpBlockIndex->nHeight >= nMainnetNewLogicBlockNumber)
     {
         if ((tmpBlockIndex->nHeight >= lastEpochChangeHeight) && (tmpBlockIndex->nHeight % nEpochInterval == 0))

@@ -136,11 +136,6 @@ BOOST_AUTO_TEST_CASE(base58_keys_valid_parse)
         std::vector<unsigned char> exp_payload = ParseHex(test[1].get_str());
         const UniValue &metadata = test[2].get_obj();
         bool isPrivkey = find_value(metadata, "isPrivkey").get_bool();
-        bool isTestnet = find_value(metadata, "isTestnet").get_bool();
-        if (isTestnet)
-            SelectParams(CBaseChainParams::TESTNET);
-        else
-            SelectParams(CBaseChainParams::MAIN);
         if(isPrivkey)
         {
             bool isCompressed = find_value(metadata, "isCompressed").get_bool();
@@ -177,6 +172,7 @@ BOOST_AUTO_TEST_CASE(base58_keys_valid_parse)
 BOOST_AUTO_TEST_CASE(base58_keys_valid_gen)
 {
     UniValue tests = read_json(std::string(json_tests::base58_keys_valid, json_tests::base58_keys_valid + sizeof(json_tests::base58_keys_valid)));
+    SelectParams(CBaseChainParams::MAIN);
 
     for (unsigned int idx = 0; idx < tests.size(); idx++) {
         UniValue test = tests[idx];
@@ -190,11 +186,6 @@ BOOST_AUTO_TEST_CASE(base58_keys_valid_gen)
         std::vector<unsigned char> exp_payload = ParseHex(test[1].get_str());
         const UniValue &metadata = test[2].get_obj();
         bool isPrivkey = find_value(metadata, "isPrivkey").get_bool();
-        bool isTestnet = find_value(metadata, "isTestnet").get_bool();
-        if (isTestnet)
-            SelectParams(CBaseChainParams::TESTNET);
-        else
-            SelectParams(CBaseChainParams::MAIN);
         if(isPrivkey)
         {
             bool isCompressed = find_value(metadata, "isCompressed").get_bool();

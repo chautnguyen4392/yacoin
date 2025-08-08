@@ -170,8 +170,11 @@ void Correct_Queue_range(std::vector<size_t> range)
             BOOST_TEST_MESSAGE("Failure on trial " << i << " expected, got " << FakeCheckCheckCompletion::n_calls);
         }
     }
+    std::cout << "TACA ===> Correct_Queue_range() Calling interrupt_all" << std::endl;
     tg.interrupt_all();
+    std::cout << "TACA ===> Correct_Queue_range() Calling join_all" << std::endl;
     tg.join_all();
+    std::cout << "TACA ===> Correct_Queue_range() completed" << std::endl;
 }
 
 /** Test that 0 checks is correct
