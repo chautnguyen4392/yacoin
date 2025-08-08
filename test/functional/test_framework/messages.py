@@ -415,7 +415,7 @@ class CTransaction:
 
 class CBlockHeader:
     __slots__ = ("hash", "hashMerkleRoot", "hashPrevBlock", "nBits", "nNonce",
-                 "nTime", "nVersion", "sha256")
+                 "nTime", "nVersion", "sha256", "scryptHash")
 
     def __init__(self, header=None):
         if header is None:
@@ -428,24 +428,29 @@ class CBlockHeader:
             self.nBits = header.nBits
             self.nNonce = header.nNonce
             self.sha256 = header.sha256
+            self.scryptHash = header.scryptHash
             self.hash = header.hash
             self.calc_sha256()
 
     def set_null(self):
-        self.nVersion = 1
+        self.nVersion = 7
         self.hashPrevBlock = 0
         self.hashMerkleRoot = 0
         self.nTime = 0
         self.nBits = 0
         self.nNonce = 0
         self.sha256 = None
+        self.scryptHash = None
         self.hash = None
 
     def deserialize(self, f):
         self.nVersion = struct.unpack("<i", f.read(4))[0]
         self.hashPrevBlock = deser_uint256(f)
         self.hashMerkleRoot = deser_uint256(f)
-        self.nTime = struct.unpack("<I", f.read(4))[0]
+        if (self.nVersion >= 7):
+            self.nTime = struct.unpack("<q", f.read(8))[0]
+        else:
+            self.nTime = struct.unpack("<I", f.read(4))[0]
         self.nBits = struct.unpack("<I", f.read(4))[0]
         self.nNonce = struct.unpack("<I", f.read(4))[0]
         self.sha256 = None
@@ -456,7 +461,10 @@ class CBlockHeader:
         r += struct.pack("<i", self.nVersion)
         r += ser_uint256(self.hashPrevBlock)
         r += ser_uint256(self.hashMerkleRoot)
-        r += struct.pack("<I", self.nTime)
+        if (self.nVersion >= 7):
+            r += struct.pack("<q", self.nTime)
+        else:
+            r += struct.pack("<I", self.nTime)
         r += struct.pack("<I", self.nBits)
         r += struct.pack("<I", self.nNonce)
         return r
@@ -467,11 +475,32 @@ class CBlockHeader:
             r += struct.pack("<i", self.nVersion)
             r += ser_uint256(self.hashPrevBlock)
             r += ser_uint256(self.hashMerkleRoot)
-            r += struct.pack("<I", self.nTime)
+            if (self.nVersion >= 7):
+                r += struct.pack("<q", self.nTime)
+            else:
+                r += struct.pack("<I", self.nTime)
             r += struct.pack("<I", self.nBits)
             r += struct.pack("<I", self.nNonce)
             self.sha256 = uint256_from_str(hash256(r))
             self.hash = encode(hash256(r)[::-1], 'hex_codec').decode('ascii')
+
+    def calc_scrypt_hash(self):
+        # Prepare the block header bytes (same as in calc_sha256)
+        if self.scryptHash is None:
+            r = b""
+            r += struct.pack("<i", self.nVersion)
+            r += ser_uint256(self.hashPrevBlock)
+            r += ser_uint256(self.hashMerkleRoot)
+            if (self.nVersion >= 7):
+                r += struct.pack("<q", self.nTime)
+            else:
+                r += struct.pack("<I", self.nTime)
+            r += struct.pack("<I", self.nBits)
+            r += struct.pack("<I", self.nNonce)
+
+            hex_str = r.hex()
+            # Compute scrypt hash
+            self.scryptHash = uint256_from_str(hash256(r))
 
     def rehash(self):
         self.sha256 = None
@@ -484,7 +513,7 @@ class CBlockHeader:
                time.ctime(self.nTime), self.nBits, self.nNonce)
 
 BLOCK_HEADER_SIZE = len(CBlockHeader().serialize())
-assert_equal(BLOCK_HEADER_SIZE, 80)
+assert_equal(BLOCK_HEADER_SIZE, 84)
 
 class CBlock(CBlockHeader):
     __slots__ = ("vtx",)
