@@ -426,6 +426,9 @@ CBlockIndex* FindForkInGlobalIndex(const CChain& chain, const CBlockLocator& loc
  */
 int GetSpendHeight(const CCoinsViewCache& inputs);
 
+/** Get block file info entry for one block file */
+CBlockFileInfo* GetBlockFileInfo(size_t n);
+
 /** Dump the mempool to disk. */
 void DumpMempool();
 

@@ -35,7 +35,7 @@
 
 #include <univalue.h>
 
-extern ::int64_t nUpTimeStart;
+::int64_t nUpTimeStart = 0;
 
 static void ConvertUpTimeToNiceString(::int64_t nUpTimeSeconds, std::string& sUpTime)
 {
