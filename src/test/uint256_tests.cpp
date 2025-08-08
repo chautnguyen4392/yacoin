@@ -129,13 +129,19 @@ BOOST_AUTO_TEST_CASE( comparison ) // <= >= < >
     uint256 LastL;
     for (int i = 255; i >= 0; --i) {
         uint256 TmpL;
-        *(TmpL.begin() + (i>>3)) |= 1<<(7-(i&7));
+        //convert bit index to little-endian byte layout
+        int byte_index = 31 - (i >> 3);            // byte position in LE
+        int bit_in_byte = i & 7;                   // 0–7
+        *(TmpL.begin() + byte_index) |= 1 << (7 - bit_in_byte);
         BOOST_CHECK( LastL < TmpL );
         LastL = TmpL;
     }
 
     BOOST_CHECK( ZeroL < R1L );
-    BOOST_CHECK( R2L < R1L );
+//    BOOST_CHECK( R2L < R1L );
+    // This is different from Bitcoin because, in Bitcoin, uint256 is stored and compared in little-endian order. Bitcoin uses arith_uint256 for consensus-related operations, which are compared in big-endian order.
+    // For Yacoin, uint256 is stored in little-endian order but compared in big-endian order
+    BOOST_CHECK( R2L > R1L );
     BOOST_CHECK( ZeroL < OneL );
     BOOST_CHECK( OneL < MaxL );
     BOOST_CHECK( R1L < MaxL );
@@ -144,10 +150,14 @@ BOOST_AUTO_TEST_CASE( comparison ) // <= >= < >
     uint160 LastS;
     for (int i = 159; i >= 0; --i) {
         uint160 TmpS;
-        *(TmpS.begin() + (i>>3)) |= 1<<(7-(i&7));
+        // Convert bit index to the correct little-endian byte position
+        int byte_index = (159 - i) >> 3;       // which byte from LSB
+        int bit_in_byte = (159 - i) & 7;       // which bit in that byte
+        *(TmpS.begin() + byte_index) |= 1 << bit_in_byte;
         BOOST_CHECK( LastS < TmpS );
         LastS = TmpS;
     }
+
     BOOST_CHECK( ZeroS < R1S );
     BOOST_CHECK( R2S < R1S );
     BOOST_CHECK( ZeroS < OneS );
