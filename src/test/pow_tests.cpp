@@ -7,80 +7,109 @@
 #include "pow.h"
 #include "random.h"
 #include "util.h"
+#include "validation.h"
 #include "test/test_bitcoin.h"
 
 #include <boost/test/unit_test.hpp>
 
-BOOST_FIXTURE_TEST_SUITE(pow_tests, BasicTestingSetup)
+BOOST_FIXTURE_TEST_SUITE(pow_tests, TestingSetup)
 
 /* Test calculation of next difficulty target with no constraints applying */
 BOOST_AUTO_TEST_CASE(get_next_work)
 {
     const auto chainParams = CreateChainParams(CBaseChainParams::MAIN);
+    // Yacoin expected spacing: 1260000
+    // Actual spacing: 1022578
+    // => higher difficulty, lower target
     int64_t nLastRetargetTime = 1261130161; // Block #30240
     CBlockIndex pindexLast;
     pindexLast.nHeight = 32255;
     pindexLast.nTime = 1262152739;  // Block #32255
-    pindexLast.nBits = 0x1d00ffff;
-    BOOST_CHECK_EQUAL(CalculateNextWorkRequired(&pindexLast, nLastRetargetTime), 0x1d00d86a);
+    pindexLast.nBits = 0x1e0fffff;
+
+    // Retarget
+    CBigNum bnNewTarget = CBigNum().SetCompact(pindexLast.nBits);
+    ::int64_t nActualTimespan = pindexLast.nTime - nLastRetargetTime;
+    ::int64_t nExpectedTimespan = nDifficultyInterval * chainParams->GetConsensus().nPowTargetSpacing;
+    bnNewTarget *= nActualTimespan;
+    bnNewTarget /= nExpectedTimespan;
+    unsigned int retargetWork = bnNewTarget.GetCompact();
+
+    unsigned int nextWork = CalculateNextWorkRequired(&pindexLast, nLastRetargetTime, chainParams->GetConsensus());
+    BOOST_CHECK_EQUAL(nextWork, 0x1E0CFC2F);
+    BOOST_CHECK(nextWork == retargetWork);
 }
 
 /* Test the constraint on the upper bound for next work */
 BOOST_AUTO_TEST_CASE(get_next_work_pow_limit)
 {
     const auto chainParams = CreateChainParams(CBaseChainParams::MAIN);
+    // Yacoin expected spacing: 1260000
+    // Actual spacing: 2055491
+    // => lower difficulty, higher target, but the upper bound limit is 0x1e0fffff (00000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffff)
+    // => keep target
     int64_t nLastRetargetTime = 1231006505; // Block #0
     CBlockIndex pindexLast;
     pindexLast.nHeight = 2015;
     pindexLast.nTime = 1233061996;  // Block #2015
-    pindexLast.nBits = 0x1d00ffff;
-    BOOST_CHECK_EQUAL(CalculateNextWorkRequired(&pindexLast, nLastRetargetTime), 0x1d00ffff);
+    pindexLast.nBits = 0x1e0fffff;
+
+    // Retarget
+    CBigNum bnNewTarget = CBigNum().SetCompact(pindexLast.nBits);
+    ::int64_t nActualTimespan = pindexLast.nTime - nLastRetargetTime;
+    ::int64_t nExpectedTimespan = nDifficultyInterval * chainParams->GetConsensus().nPowTargetSpacing;
+    bnNewTarget *= nActualTimespan;
+    bnNewTarget /= nExpectedTimespan;
+    unsigned int retargetWork = bnNewTarget.GetCompact();
+
+    unsigned int nextWork = CalculateNextWorkRequired(&pindexLast, nLastRetargetTime, chainParams->GetConsensus());
+    BOOST_CHECK_EQUAL(nextWork, 0x1e0fffff);
+    BOOST_CHECK(nextWork < retargetWork);
 }
 
-/* Test the constraint on the lower bound for actual time taken */
-BOOST_AUTO_TEST_CASE(get_next_work_lower_limit_actual)
+/* Test the constraint on the 1/3 highest difficulty */
+BOOST_AUTO_TEST_CASE(get_next_work_one_third_highest_difficulty)
 {
-    const auto chainParams = CreateChainParams(CBaseChainParams::MAIN);
-    int64_t nLastRetargetTime = 1279008237; // Block #66528
-    CBlockIndex pindexLast;
-    pindexLast.nHeight = 68543;
-    pindexLast.nTime = 1279297671;  // Block #68543
-    pindexLast.nBits = 0x1c05a3f4;
-    BOOST_CHECK_EQUAL(CalculateNextWorkRequired(&pindexLast, nLastRetargetTime), 0x1c0168fd);
-}
-
-/* Test the constraint on the upper bound for actual time taken */
-BOOST_AUTO_TEST_CASE(get_next_work_upper_limit_actual)
-{
-    const auto chainParams = CreateChainParams(CBaseChainParams::MAIN);
-    int64_t nLastRetargetTime = 1263163443; // NOTE: Not an actual block time
-    CBlockIndex pindexLast;
-    pindexLast.nHeight = 46367;
-    pindexLast.nTime = 1269211443;  // Block #46367
-    pindexLast.nBits = 0x1c387f6f;
-    BOOST_CHECK_EQUAL(CalculateNextWorkRequired(&pindexLast, nLastRetargetTime), 0x1d00e1fd);
-}
-
-BOOST_AUTO_TEST_CASE(GetBlockProofEquivalentTime_test)
-{
+    // Create the chain with target 0000000000000000000000000000000000000fffff0000000000000000000000
+    unsigned int highestDiff = 0xe0fffff;
     const auto chainParams = CreateChainParams(CBaseChainParams::MAIN);
     std::vector<CBlockIndex> blocks(10000);
-    for (int i = 0; i < 10000; i++) {
+    for (int i = 0; i < 9; i++) {
         blocks[i].pprev = i ? &blocks[i - 1] : nullptr;
         blocks[i].nHeight = i;
         blocks[i].nTime = 1269211443 + i * chainParams->GetConsensus().nPowTargetSpacing;
-        blocks[i].nBits = 0x207fffff; /* target 0x7fffff000... */
+        blocks[i].nBits = highestDiff;
         blocks[i].bnChainTrust = i ? blocks[i - 1].bnChainTrust + blocks[i].GetBlockTrust() : 0;
     }
+    chainActive.SetTip(&blocks[8]);
 
-    for (int j = 0; j < 1000; j++) {
-        CBlockIndex *p1 = &blocks[InsecureRandRange(10000)];
-        CBlockIndex *p2 = &blocks[InsecureRandRange(10000)];
-        CBlockIndex *p3 = &blocks[InsecureRandRange(10000)];
+    // Yacoin expected spacing: 1260000
+    // Actual spacing: 5040000
+    // => lower difficulty, higher target, but the upper bound limit is 1/3 highest difficulty (0xe2ffffd)
+    // => keep target
+    int64_t nLastRetargetTime = 1269211443; // Block #0
+    CBlockIndex pindexLast;
+    pindexLast.nHeight = 2015;
+    pindexLast.nTime = 1274251443;  // Block #2015
+    pindexLast.nBits = highestDiff;
 
-        int64_t tdiff = GetBlockProofEquivalentTime(*p1, *p2, *p3, chainParams->GetConsensus());
-        BOOST_CHECK_EQUAL(tdiff, p1->GetBlockTime() - p2->GetBlockTime());
-    }
+    // Retarget
+    CBigNum bnNewTarget = CBigNum().SetCompact(pindexLast.nBits);
+    ::int64_t nActualTimespan = pindexLast.nTime - nLastRetargetTime;
+    ::int64_t nExpectedTimespan = nDifficultyInterval * chainParams->GetConsensus().nPowTargetSpacing;
+    bnNewTarget *= nActualTimespan;
+    bnNewTarget /= nExpectedTimespan;
+    unsigned int retargetWork = bnNewTarget.GetCompact();
+
+    // Maximum target corresponding to 1/3 highest difficulty
+    CBigNum bnMaximumTarget = CBigNum().SetCompact(highestDiff);
+    bnMaximumTarget *= 3;
+    unsigned int maximumWork = bnMaximumTarget.GetCompact();
+
+    unsigned int nextWork = CalculateNextWorkRequired(&pindexLast, nLastRetargetTime, chainParams->GetConsensus());
+    BOOST_CHECK_EQUAL(nextWork, 0xe2ffffd);
+    BOOST_CHECK_EQUAL(nextWork, maximumWork);
+    BOOST_CHECK(nextWork < retargetWork);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

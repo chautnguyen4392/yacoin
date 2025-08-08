@@ -86,7 +86,7 @@ public:
         consensus.BIP65Height = 1890000; // 0000030f8402abf3d0e2efeb72274da8a4b4389ef8267d2c2a14fe58f2e088d0
         consensus.BIP68Height = 1890000; // 0000030f8402abf3d0e2efeb72274da8a4b4389ef8267d2c2a14fe58f2e088d0
         consensus.HeliopolisHardforkHeight = 1890000; // 0000030f8402abf3d0e2efeb72274da8a4b4389ef8267d2c2a14fe58f2e088d0
-        consensus.nPowTargetTimespan = 21000;  // 21000 blocks
+        consensus.nPowTargetTimespan = 21000 * 60;  // 21000 blocks * 60 seconds
         consensus.nPowTargetSpacing = 1 * 60; // 1 minutes
         consensus.fPowAllowMinDifficultyBlocks = false;
         consensus.fPowNoRetargeting = false;
