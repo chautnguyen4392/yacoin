@@ -64,6 +64,7 @@
 #include <boost/interprocess/sync/file_lock.hpp>
 #include <boost/thread.hpp>
 #include <openssl/crypto.h>
+#include <iostream>
 
 static const bool DEFAULT_PROXYRANDOMIZE = true;
 static const bool DEFAULT_DISABLE_SAFEMODE = false;
@@ -180,8 +181,6 @@ void Interrupt(boost::thread_group& threadGroup)
     InterruptTorControl();
     if (g_connman)
         g_connman->Interrupt();
-    ThreadScriptCheckQuit();
-    ThreadHashCalculationQuit();
     threadGroup.interrupt_all();
 }
 

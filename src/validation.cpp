@@ -1655,11 +1655,6 @@ void ThreadScriptCheck()
     LogPrintf("ThreadScriptCheck shutdown\n");
 }
 
-void ThreadScriptCheckQuit()
-{
-    scriptcheckqueue.Quit();
-}
-
 static unsigned int GetBlockScriptFlags(const CBlockIndex* pindex, const Consensus::Params& consensusparams) {
     AssertLockHeld(cs_main);
 

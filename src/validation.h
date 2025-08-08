@@ -301,8 +301,6 @@ void LoadBlockRewardAndHighestDiff();
 void UnloadBlockIndex();
 /** Run an instance of the script checking thread */
 void ThreadScriptCheck();
-// Stop the script checking threads
-void ThreadScriptCheckQuit();
 /** Check whether we are doing an initial block download (synchronizing from disk or network) */
 bool IsInitialBlockDownload();
 /** Retrieve a transaction (from memory pool, or from disk, if possible) */
