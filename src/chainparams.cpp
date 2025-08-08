@@ -154,6 +154,11 @@ public:
         fDefaultConsistencyChecks = false;
         fRequireStandard = true;
         fMineBlocksOnDemand = false;
+#ifndef LOW_DIFFICULTY_FOR_DEVELOPMENT
+        fMiningRequiresPeers = true;
+#else
+        fMiningRequiresPeers = false;
+#endif
 
         checkpointData = (CCheckpointData) {
             {
@@ -292,6 +297,7 @@ public:
         fDefaultConsistencyChecks = false;
         fRequireStandard = true;
         fMineBlocksOnDemand = false;
+        fMiningRequiresPeers = false;
 
         checkpointData = (CCheckpointData) {
             {

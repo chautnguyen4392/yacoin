@@ -750,10 +750,12 @@ static void YacoinMiner() // here fProofOfStake is always false
 
         LogPrintf("Starting mining loop\n");
         while (fGenerateYacoins && nBlocksToGenerate != 0) {
-            while (IsInitialBlockDownload() || (g_connman->GetNodeCount(CConnman::CONNECTIONS_ALL) == 0 && !fTestNet)) {
-                Sleep(nMillisecondsPerSecond);
-                if (fShutdown || !fGenerateYacoins) // someone shut off the miner
-                    break;
+            if (Params().MiningRequiresPeers()) {
+                while (IsInitialBlockDownload() || (g_connman->GetNodeCount(CConnman::CONNECTIONS_ALL) == 0)) {
+                    Sleep(nMillisecondsPerSecond);
+                    if (fShutdown || !fGenerateYacoins) // someone shut off the miner
+                        break;
+                }
             }
 
             if (fShutdown || !fGenerateYacoins) // someone shut off the miner
@@ -778,11 +780,6 @@ static void YacoinMiner() // here fProofOfStake is always false
 
             CBlock * pblock = &pblocktemplate->block;
             IncrementExtraNonce(pblock, pindexPrev, nExtraNonce);
-
-            bool fYac1dot0BlockOrTx = false;
-            if ((pindexPrev->nHeight + 1) >= nMainnetNewLogicBlockNumber) {
-                fYac1dot0BlockOrTx = true;
-            }
 
             LogPrintf("Running YACoinMiner with %u transactions in block (%u bytes)\n", pblock->vtx.size(), ::GetSerializeSize( * pblock, SER_NETWORK, PROTOCOL_VERSION));
 
