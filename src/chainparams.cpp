@@ -231,7 +231,7 @@ public:
         strNetworkID = "regtest";
         consensus.powLimit = CBigNum(uint256S("7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"));
         consensus.initialHashTarget = CBigNum(uint256S("7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"));
-        consensus.initialMoneySupply = 1E14;
+        consensus.initialMoneySupply = 1E14; // With this value, each block reward in the first interval is  3.802570 YAC
         consensus.BIP65Height = 0; // 0000030f8402abf3d0e2efeb72274da8a4b4389ef8267d2c2a14fe58f2e088d0
         consensus.BIP68Height = 0; // 0000030f8402abf3d0e2efeb72274da8a4b4389ef8267d2c2a14fe58f2e088d0
         consensus.HeliopolisHardforkHeight = 0; // 0000030f8402abf3d0e2efeb72274da8a4b4389ef8267d2c2a14fe58f2e088d0
