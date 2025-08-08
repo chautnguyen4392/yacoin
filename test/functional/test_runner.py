@@ -69,6 +69,7 @@ TEST_EXIT_SKIPPED = 77
 BASE_SCRIPTS = [
     'feature_help.py', # at the beginning to quickly check that it can be started
     'feature_defaultport.py',
+    'feature_reindex.py',
     'feature_basic_transfer.py',
     'feature_describe_redeemscript.py',
     'feature_epoch.py',
@@ -83,7 +84,11 @@ BASE_SCRIPTS = [
     'feature_uptime.py',
     'interface_rpc.py',
     'mining_basic.py',
-    'rpc_check.py'
+    'rpc_check.py',
+    'rpc_decodescript.py',
+    'wallet_disable.py',
+    'p2p_disconnect_ban.py',
+    'p2p_addr_relay.py',
 ]
 
 EXTENDED_SCRIPTS = []
