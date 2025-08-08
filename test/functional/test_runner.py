@@ -96,6 +96,9 @@ BASE_SCRIPTS = [
     'p2p_mempool.py',
     'p2p_timeouts.py',
     'mempool_persist.py',
+    'mempool_reorg.py',
+    'mempool_resurrect.py',
+    'mempool_spend_coinbase.py',
 ]
 
 EXTENDED_SCRIPTS = []
