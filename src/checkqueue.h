@@ -1,4 +1,5 @@
 // Copyright (c) 2012 The Bitcoin developers
+// Copyright (c) 2013-2025 The Yacoin developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -66,33 +67,25 @@ private:
     // Internal function that does bulk of the verification work.
     bool Loop(bool fMaster = false) 
     {
-        boost::condition_variable 
-            &cond = fMaster ? condMaster : condWorker;
-
-        std::vector<T> 
-            vChecks;
-
+        boost::condition_variable& cond = fMaster ? condMaster : condWorker;
+        std::vector<T> vChecks;
         vChecks.reserve(nBatchSize);
-        unsigned int 
-            nNow = 0;
-        bool 
-            fOk = true;
+        unsigned int nNow = 0;
+        bool fOk = true;
         do 
         {
             {
                 boost::unique_lock<boost::mutex> lock(mutex);
                 // first do the clean-up of the previous loop run (allowing us to do it in the same critsect)
-                if (nNow) 
-                {
+                if (nNow) {
                     fAllOk &= fOk;
                     nTodo -= nNow;
                     if (nTodo == 0 && !fMaster)
-                        // We processed the last element; inform the master he can exit and return the result
+                        // We processed the last element; inform the master it can exit and return the result
                         condMaster.notify_one();
-                } 
-                else 
-                {   // first iteration
-                    ++nTotal;
+                } else {
+                    // first iteration
+                    nTotal++;
                 }
                 // logically, the do loop starts here
                 while (queue.empty()) 
@@ -119,13 +112,7 @@ private:
                 //   all workers finish approximately simultaneously.
                 // * Try to account for idle jobs which will instantly start helping.
                 // * Don't do batches smaller than 1 (duh), or larger than nBatchSize.
-                nNow = std::max(
-                                1U, 
-                                std::min(
-                                         nBatchSize, 
-                                         (unsigned int)queue.size() / (nTotal + nIdle + 1)
-                                        )
-                               );
+                nNow = std::max(1U, std::min(nBatchSize, (unsigned int)queue.size() / (nTotal + nIdle + 1)));
                 vChecks.resize(nNow);
                 for (unsigned int i = 0; i < nNow; ++i) 
                 {
@@ -138,15 +125,17 @@ private:
                 fOk = fAllOk;
             }
             // execute work
-            BOOST_FOREACH(T &check, vChecks)
+            for (T& check : vChecks)
                 if (fOk)
                     fOk = check();
             vChecks.clear();
-        } 
-        while(true);
+        } while (true);
     }
 
 public:
+    //! Mutex to ensure only one concurrent CCheckQueueControl
+    boost::mutex ControlMutex;
+
     // Create a new check queue
     CCheckQueue(unsigned int nBatchSizeIn) :
         nIdle(0), nTotal(0), fAllOk(true), nTodo(0), fQuit(false), nBatchSize(nBatchSizeIn) {}
@@ -164,10 +153,10 @@ public:
     }
 
     // Add a batch of checks to the queue
-    void Add(std::vector<T> &vChecks) 
+    void Add(std::vector<T>& vChecks)
     {
         boost::unique_lock<boost::mutex> lock(mutex);
-        BOOST_FOREACH(T &check, vChecks) {
+        for (T& check : vChecks) {
             queue.push_back(T());
             check.swap(queue.back());
         }
@@ -205,39 +194,53 @@ public:
     }
 };
 
-/** RAII-style controller object for a CCheckQueue that guarantees the passed
- *  queue is finished before continuing.
+/**
+ * RAII-style controller object for a CCheckQueue that guarantees the passed
+ * queue is finished before continuing.
  */
-template<typename T> class CCheckQueueControl {
+template <typename T>
+class CCheckQueueControl
+{
 private:
-    CCheckQueue<T> *pqueue;
+    CCheckQueue<T> * const pqueue;
     bool fDone;
 
 public:
-    CCheckQueueControl(CCheckQueue<T> *pqueueIn) : pqueue(pqueueIn), fDone(false) {
-        // passed queue is supposed to be unused, or NULL
-        if (pqueue != NULL) {
+    CCheckQueueControl() = delete;
+    CCheckQueueControl(const CCheckQueueControl&) = delete;
+    CCheckQueueControl& operator=(const CCheckQueueControl&) = delete;
+    explicit CCheckQueueControl(CCheckQueue<T> * const pqueueIn) : pqueue(pqueueIn), fDone(false)
+    {
+        // passed queue is supposed to be unused, or nullptr
+        if (pqueue != nullptr) {
             bool isIdle = pqueue->IsIdle();
             Yassert(isIdle);
+            ENTER_CRITICAL_SECTION(pqueue->ControlMutex);
         }
     }
 
-    bool Wait() {
-        if (pqueue == NULL)
+    bool Wait()
+    {
+        if (pqueue == nullptr)
             return true;
         bool fRet = pqueue->Wait();
         fDone = true;
         return fRet;
     }
 
-    void Add(std::vector<T> &vChecks) {
-        if (pqueue != NULL)
+    void Add(std::vector<T>& vChecks)
+    {
+        if (pqueue != nullptr)
             pqueue->Add(vChecks);
     }
 
-    ~CCheckQueueControl() {
+    ~CCheckQueueControl()
+    {
         if (!fDone)
             Wait();
+        if (pqueue != nullptr) {
+            LEAVE_CRITICAL_SECTION(pqueue->ControlMutex);
+        }
     }
 };
 

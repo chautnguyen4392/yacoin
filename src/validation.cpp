@@ -1026,6 +1026,12 @@ void UpdateCoins(const CTransaction& tx, CCoinsViewCache& inputs, CTxUndo &txund
     AddCoins(inputs, tx, nHeight, blockHash, false, tokenCache, undoTokenData); /** YAC_TOKEN START */ /* Pass tokenCache into function */ /** YAC_TOKEN END */
 }
 
+void UpdateCoins(const CTransaction& tx, CCoinsViewCache& inputs, int nHeight)
+{
+    CTxUndo txundo;
+    UpdateCoins(tx, inputs, txundo, nHeight, uint256());
+}
+
 bool CScriptCheck::operator()()
 {
     const CScript&scriptSig = ptxTo->vin[nIn].scriptSig;
@@ -4501,6 +4507,11 @@ void static CheckBlockIndex(const Consensus::Params& consensusParams)
 std::string CBlockFileInfo::ToString() const
 {
     return strprintf("CBlockFileInfo(blocks=%u, size=%u, heights=%u...%u, time=%s...%s)", nBlocks, nSize, nHeightFirst, nHeightLast, DateTimeStrFormat("%Y-%m-%d", nTimeFirst), DateTimeStrFormat("%Y-%m-%d", nTimeLast));
+}
+
+CBlockFileInfo* GetBlockFileInfo(size_t n)
+{
+    return &vinfoBlockFile.at(n);
 }
 
 static const uint64_t MEMPOOL_DUMP_VERSION = 1;
