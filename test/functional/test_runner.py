@@ -89,6 +89,13 @@ BASE_SCRIPTS = [
     'wallet_disable.py',
     'p2p_disconnect_ban.py',
     'p2p_addr_relay.py',
+    'p2p_getdata.py',
+    'p2p_invalid_messages.py',
+    'p2p_leak.py',
+    'p2p_leak_tx.py',
+    'p2p_mempool.py',
+    'p2p_timeouts.py',
+    'mempool_persist.py',
 ]
 
 EXTENDED_SCRIPTS = []

@@ -190,6 +190,23 @@ UniValue getbestblockhash(const JSONRPCRequest& request)
     return chainActive.Tip()->blockHash.GetHex();
 }
 
+UniValue getbestblockhashsha256(const JSONRPCRequest& request)
+{
+    if (request.fHelp || request.params.size() != 0)
+        throw std::runtime_error(
+            "getbestblockhashsha256\n"
+            "\nReturns the sha256 hash of the best (tip) block in the longest blockchain.\n"
+            "\nResult:\n"
+            "\"hex\"      (string) the block hash hex encoded\n"
+            "\nExamples:\n"
+            + HelpExampleCli("getbestblockhashsha256", "")
+            + HelpExampleRpc("getbestblockhashsha256", "")
+        );
+
+    LOCK(cs_main);
+    return chainActive.Tip()->GetBlockHeader().GetSHA256Hash().GetHex();
+}
+
 void RPCNotifyBlockChange(bool ibd, const CBlockIndex * pindex)
 {
     if(pindex) {
@@ -1182,6 +1199,7 @@ static const CRPCCommand commands[] =
     { "blockchain",         "gettimechaininfo",       &gettimechaininfo,       true,  {} },
     { "blockchain",         "getchaintxstats",        &getchaintxstats,        true,  {"nblocks", "blockhash"} },
     { "blockchain",         "getbestblockhash",       &getbestblockhash,       true,  {} },
+    { "blockchain",         "getbestblockhashsha256", &getbestblockhashsha256, true,  {} },
     { "blockchain",         "getblockcount",          &getblockcount,          true,  {} },
     { "blockchain",         "getblock",               &getblock,               true,  {"blockhash","verbosity|verbose"} },
     { "blockchain",         "getblockhash",           &getblockhash,           true,  {"height"} },
