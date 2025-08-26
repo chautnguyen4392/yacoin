@@ -3,18 +3,18 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <util.h>
-//#include <consensus/params.h>
+#include "util.h"
+#include "consensus/params.h"
 //#include <script/ismine.h>
-//#include <tinyformat.h>
+#include "tinyformat.h"
 #include "tokendb.h"
 #include "tokens.h"
-#include "main.h"
-//#include "validation.h"
+#include "validation.h"
 
 #include <boost/thread.hpp>
 #include <memory>
 
+// Keys of token database
 static const char TOKEN_FLAG = 'A';
 static const char TOKEN_ADDRESS_QUANTITY_FLAG = 'B';
 static const char ADDRESS_TOKEN_QUANTITY_FLAG = 'C';
@@ -24,8 +24,7 @@ static const char MEMPOOL_REISSUED_TX = 'Z';
 
 static size_t MAX_DATABASE_RESULTS = 50000;
 
-CTokensDB::CTokensDB(const char *pszMode, bool fWipe) :
-        CDBWrapper(TOKEN_DATA, pszMode, fWipe) {
+CTokensDB::CTokensDB(size_t nCacheSize, bool fMemory, bool fWipe) : CDBWrapper(GetDataDir() / "tokens", nCacheSize, fMemory, fWipe) {
 }
 
 bool CTokensDB::WriteTokenData(const CNewToken &token, const int nHeight, const uint256& blockHash)
@@ -172,7 +171,7 @@ bool CTokensDB::LoadTokens()
 
 bool CTokensDB::TokenDir(std::vector<CDatabasedTokenData>& tokens, const std::string filter, const size_t count, const long start)
 {
-    FlushTokenToDisk();
+    FlushStateToDisk();
 
     std::unique_ptr<CDBIterator> pcursor(NewIterator());
     pcursor->Seek(std::make_pair(TOKEN_FLAG, std::string()));
@@ -243,7 +242,7 @@ bool CTokensDB::TokenDir(std::vector<CDatabasedTokenData>& tokens, const std::st
 
 bool CTokensDB::AddressDir(std::vector<std::pair<std::string, CAmount> >& vecTokenAmount, int& totalEntries, const bool& fGetTotal, const std::string& address, const size_t count, const long start)
 {
-    FlushTokenToDisk();
+    FlushStateToDisk();
 
     std::unique_ptr<CDBIterator> pcursor(NewIterator());
     pcursor->Seek(std::make_pair(ADDRESS_TOKEN_QUANTITY_FLAG, std::make_pair(address, std::string())));
@@ -316,7 +315,7 @@ bool CTokensDB::AddressDir(std::vector<std::pair<std::string, CAmount> >& vecTok
 // Can get to total count of addresses that belong to a certain token_name, or get you the list of all address that belong to a certain token_name
 bool CTokensDB::TokenAddressDir(std::vector<std::pair<std::string, CAmount> >& vecAddressAmount, int& totalEntries, const bool& fGetTotal, const std::string& tokenName, const size_t count, const long start)
 {
-    FlushTokenToDisk();
+    FlushStateToDisk();
 
     std::unique_ptr<CDBIterator> pcursor(NewIterator());
     pcursor->Seek(std::make_pair(TOKEN_ADDRESS_QUANTITY_FLAG, std::make_pair(tokenName, std::string())));

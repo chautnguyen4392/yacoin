@@ -11,21 +11,26 @@
 #include <vector>
 #include <atomic>
 #include <crypto/siphash.h>
+
+//#include "primitives/transaction.h"
+//#include "primitives/block.h"
+//#include "policy/feerate.h"
+//#include "core_memusage.h"
+//#include "memusage.h"
+//#include "random.h"
+#include "amount.h"
+#include "coins.h"
+#include "indirectmap.h"
+#include "policy/feerate.h"
+#include "primitives/transaction.h"
+#include "sync.h"
+#include "random.h"
+
 #include <boost/multi_index_container.hpp>
 #include <boost/multi_index/hashed_index.hpp>
 #include <boost/multi_index/ordered_index.hpp>
 #include <boost/multi_index/sequenced_index.hpp>
-
 #include <boost/signals2/signal.hpp>
-
-#include "primitives/transaction.h"
-#include "primitives/block.h"
-#include "policy/feerate.h"
-#include "core_memusage.h"
-#include "memusage.h"
-#include "random.h"
-
-class CTxDB;
 
 /** Fake height value used in Coin to signify they are only in the memory pool (since 0.8) */
 static const uint32_t MEMPOOL_HEIGHT = 0x7FFFFFFF;
@@ -39,6 +44,9 @@ static const unsigned int DEFAULT_DESCENDANT_LIMIT = 25;
 static const unsigned int DEFAULT_DESCENDANT_SIZE_LIMIT = 101;
 /** Default for -mempoolexpiry, expiration time for mempool transactions in hours */
 static const unsigned int DEFAULT_MEMPOOL_EXPIRY = 336;
+
+class CBlockIndex;
+struct ConnectedBlockTokenData;
 
 struct LockPoints
 {
@@ -530,7 +538,7 @@ public:
     bool addUnchecked(const uint256& hash, const CTxMemPoolEntry &entry, setEntries &setAncestors);
 
     void removeRecursive(const CTransaction &tx, MemPoolRemovalReason reason = MemPoolRemovalReason::UNKNOWN);
-    void removeForReorg(unsigned int nMemPoolHeight, int flags); // Used in case of reorg to remove any now-immature tx and any no-longer-final timelock tx
+    void removeForReorg(const CCoinsViewCache *pcoins, unsigned int nMemPoolHeight, int flags); // Used in case of reorg to remove any now-immature tx and any no-longer-final timelock tx
     void removeConflicts(const CTransaction &tx);
     void removeForBlock(const std::vector<CTransaction>& vtx, ConnectedBlockTokenData& connectedBlockData);
 
@@ -551,9 +559,6 @@ public:
     void PrioritiseTransaction(const uint256& hash, const CAmount& nFeeDelta);
     void ApplyDelta(const uint256 hash, CAmount &nFeeDelta) const;
     void ClearPrioritisation(const uint256 hash);
-
-    // Old implementation
-    bool accept(CValidationState &state, CTxDB& txdb, const CTransaction &tx, bool* pfMissingInputs);
 
 public:
     /** Remove a set of transactions from the mempool.
@@ -682,6 +687,27 @@ private:
 };
 
 /**
+ * CCoinsView that brings transactions from a memorypool into view.
+ * It does not check for spendings by memory pool transactions.
+ * Instead, it provides access to all Coins which are either unspent in the
+ * base CCoinsView, or are outputs from any mempool transaction!
+ * This allows transaction replacement to work as expected, as you want to
+ * have all inputs "available" to check signatures, and any cycles in the
+ * dependency graph are checked directly in AcceptToMemoryPool.
+ * It also allows you to sign a double-spend directly in signrawtransaction,
+ * as long as the conflicting transaction is not yet confirmed.
+ */
+class CCoinsViewMemPool : public CCoinsViewBacked
+{
+protected:
+    const CTxMemPool& mempool;
+
+public:
+    CCoinsViewMemPool(CCoinsView* baseIn, const CTxMemPool& mempoolIn);
+    bool GetCoin(const COutPoint &outpoint, Coin &coin) const override;
+};
+
+/**
  * DisconnectedBlockTransactions
 
  * During the reorg, it's desirable to re-add previously confirmed transactions
@@ -771,6 +797,11 @@ struct DisconnectedBlockTransactions {
         cachedInnerUsage = 0;
         queuedTx.clear();
     }
+};
+
+struct ConnectedBlockTokenData
+{
+    std::set<CTokenCacheNewToken> newTokensToAdd;
 };
 
 #endif // YACOIN_TXMEMPOOL_H

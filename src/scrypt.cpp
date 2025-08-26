@@ -38,21 +38,11 @@ extern "C" {
 #include "scrypt-jane/scrypt-jane.h"
 }
 
-#ifndef SCRYPT_H
- #include "scrypt.h"
-#endif
-
-#ifndef PBKDF2_H
- #include "pbkdf2.h"
-#endif
-
-#ifndef YACOIN_RANDOM_NONCE_H
- #include "random_nonce.h"
-#endif
-
-#ifndef BITCOIN_MAIN_H
- #include "main.h"
-#endif
+#include "scrypt.h"
+#include "pbkdf2.h"
+#include "random_nonce.h"
+#include "validation.h"
+#include "main.h"
 #include "primitives/block.h"
 
 #define SCRYPT_BUFFER_SIZE (131072 + 63)
@@ -195,7 +185,6 @@ void scrypt_buffer_free(void *scratchpad)
 //_____________________________________________________________________________
 unsigned int scanhash_scrypt(
                             char *pdata,
-                            //::uint32_t max_nonce, 
                             ::uint32_t &hash_count,
                             void *result, 
                             unsigned char Nfactor
@@ -209,8 +198,7 @@ unsigned int scanhash_scrypt(
 #else
         nTunedTo5seconds = 100;
 #endif
-const ::uint32_t
-    NArbitraryHashCount = nTunedTo5seconds;   
+const ::uint32_t NArbitraryHashCount = nTunedTo5seconds;
                                 // this is a function of the actual hps, 
                                 // which will vary from cpu to cpu, etc.
                                 // trying for ~5 seconds, noting that
@@ -242,11 +230,9 @@ const ::uint32_t
         data = &old_block_data;
         nOnce = &old_block_data.nonce;
     }
-    uint256
-        nT = *phashTarget;
+    uint256 nT = *phashTarget;
     unsigned char
       //hashTarget = (CBigNum().SetCompact(pdata->nBits)).getuint256(); // PoW hashTarget
-        //*pTestHash = (unsigned char *)&nPoWeasiestTargetLimitTestNet,
         *hasht = (unsigned char *) &nT,
         *hashc = (unsigned char *) &hash,
       //highestZeroBitsSet = 0xe0;
@@ -314,7 +300,7 @@ const ::uint32_t
 #endif
         }
 
-        if ((pindexPrev != chainActive.Tip()) || fShutdown)
+        if ((pindexPrev != chainActive.Tip()) || fShutdown || !fGenerateYacoins)
             break;
     }
     memcpy(result, hash, 32);

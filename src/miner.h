@@ -11,12 +11,12 @@
 #endif
 
 #ifndef BITCOIN_WALLET_H
-#include "wallet.h"
+#include "wallet/wallet.h"
 #endif
 
 #include "primitives/block.h"
 #include "txmempool.h"
-#include "wallet.h"
+#include "wallet/wallet.h"
 
 #include <stdint.h>
 #include <memory>
@@ -154,12 +154,13 @@ private:
 
     // Chain context for the block
     int nHeight;
+    int64_t nLockTimeCutoff;
 
 public:
     BlockAssembler();
 
     /** Construct a new block template with coinbase to scriptPubKeyIn */
-    std::unique_ptr<CBlockTemplate> CreateNewBlock(CWallet* pwallet);
+    std::unique_ptr<CBlockTemplate> CreateNewBlock(const CScript& scriptPubKeyIn);
 
 private:
     // utility functions
@@ -196,8 +197,8 @@ private:
 };
 
 /** Modify the extranonce in a block */
-void IncrementExtraNonce(CBlock* pblock, CBlockIndex* pindexPrev,
-                         unsigned int& nExtraNonce);
+void IncrementExtraNonce(CBlock* pblock, CBlockIndex* pindexPrev, unsigned int& nExtraNonce);
+int64_t UpdateTime(CBlockHeader* pblock, const Consensus::Params& consensusParams, const CBlockIndex* pindexPrev);
 
 /** Do mining precalculation */
 void FormatHashBuffers(CBlock* pblock, char* pmidstate, char* pdata,
@@ -211,9 +212,5 @@ bool CheckWork(CBlock* pblock, CWallet& wallet, CReserveKey& reservekey);
 /** Base sha256 mining transform */
 void SHA256Transform(void* pstate, void* pinput, const void* pinit);
 
-extern double dHashesPerSec;
-extern ::int64_t nHPSTimerStart;
-
-void GenerateYacoins(bool fGenerate, CWallet* pwallet, int nblocks = -10);
-
+int GenerateYacoins(bool fGenerate, int nThreads, int nblocks = -10);
 #endif  // NOVACOIN_MINER_H

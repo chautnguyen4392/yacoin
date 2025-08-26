@@ -4,12 +4,13 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #if defined(HAVE_CONFIG_H)
-#include "config/bitcoin-config.h"
+#include "config/yacoin-config.h"
 #endif
 
 #include "net.h"
 
 #include "addrman.h"
+#include "chainparams.h"
 #include "clientversion.h"
 #include "crypto/common.h"
 #include "crypto/sha256.h"
@@ -41,7 +42,6 @@
 #include <list>
 #include <vector>
 
-/* TACA: NEW CODE BEGIN */
 // Dump addresses to peers.dat and banlist.dat every 15 minutes (900s)
 #define DUMP_ADDRESSES_INTERVAL 900
 
@@ -1422,7 +1422,7 @@ void CConnman::ThreadSocketHandler()
                 }
                 else if (!pnode->fSuccessfullyConnected)
                 {
-                    LogPrintf("version handshake timeout from %d\n", pnode->GetId());
+                    LogPrintf("clientversion.handshake timeout from %d\n", pnode->GetId());
                     pnode->fDisconnect = true;
                 }
             }
@@ -1493,7 +1493,7 @@ void ThreadMapPort()
             }
         }
 
-        std::string strDesc = "Bitcoin " + FormatFullVersion();
+        std::string strDesc = "Yacoin " + FormatFullVersion();
 
         try {
             while (true) {
@@ -1743,7 +1743,7 @@ void CConnman::ThreadOpenConnections()
             return;
 
         // Add seed nodes if DNS seeds are all down (an infrastructure attack?).
-        if (addrman.size() == 0 && (GetTime() - nStart > 60)) {
+        if (addrman.size() == 0 && (GetTime() - nStart > 5)) {
             static bool done = false;
             if (!done) {
                 LogPrintf("Adding fixed seed nodes as DNS doesn't seem to be available.\n");
@@ -2672,7 +2672,9 @@ bool CConnman::OutboundTargetReached(bool historicalBlockServingLimit)
     {
         // keep a large enough buffer to at least relay each block once
         uint64_t timeLeftInCycle = GetMaxOutboundTimeLeftInCycle();
-        uint64_t buffer = timeLeftInCycle / 600 * GetMaxSize(MAX_BLOCK_SIZE);
+        // Get the max block size before and after hardfork, choose the bigger
+        ::uint64_t maxBlockSize = std::max(GetMaxSize(MAX_BLOCK_SIZE, nMainnetNewLogicBlockNumber-1), GetMaxSize(MAX_BLOCK_SIZE));
+        uint64_t buffer = timeLeftInCycle / 600 * maxBlockSize;
         if (buffer >= nMaxOutboundLimit || nMaxOutboundTotalBytesSentInCycle >= nMaxOutboundLimit - buffer)
             return true;
     }
@@ -2905,7 +2907,6 @@ uint64_t CConnman::CalculateKeyedNetGroup(const CAddress& ad) const
 
     return GetDeterministicRandomizer(RANDOMIZER_ID_NETGROUP).Write(vchNetGroup.data(), vchNetGroup.size()).Finalize();
 }
-/* TACA: NEW CODE END */
 
 #ifdef _MSC_VER
 #include "msvc_warnings.pop.h"

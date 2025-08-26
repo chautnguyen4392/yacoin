@@ -2,12 +2,14 @@
 // Copyright (c) 2009-2012 The Bitcoin developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
-#ifdef _MSC_VER
-    #include "msvc_warnings.push.h"
+
+#if defined(HAVE_CONFIG_H)
+#include "config/yacoin-config.h"
 #endif
 
 #include "util.h"
 
+#include "chainparamsbase.h"
 #include "fs.h"
 #include "random.h"
 #include "serialize.h"
@@ -96,7 +98,6 @@
 #include <execinfo.h>
 #endif
 
-/* TACA: NEW CODE BEGIN */
 // Application startup time (used for uptime calculation)
 const int64_t nStartupTime = GetTime();
 
@@ -562,11 +563,6 @@ fs::path GetDefaultDataDir()
 static fs::path pathCached;
 static fs::path pathCachedNetSpecific;
 static CCriticalSection csPathCached;
-/* TACA: NEW CODE END */
-
-
-
-
 
 using std::map;
 using std::string;
@@ -577,16 +573,15 @@ using std::set;
 namespace bt = boost::posix_time;
 
 bool fDebug = false;
-bool fDebugNet = false;
 ::int32_t nMainnetNewLogicBlockNumber;
 ::int32_t nTokenSupportBlockNumber;
-unsigned char MAXIMUM_YAC1DOT0_N_FACTOR;
+unsigned char nFactorAtHardfork;
 ::int64_t nYac10HardforkTime = 1619048730;
 // Epoch interval is a difficulty period. Right now on testnet, it is 21,000 blocks
 ::uint32_t nEpochInterval = 21000;
 ::uint32_t nDifficultyInterval = nEpochInterval;
-bool fRequestShutdown = false;
 bool fShutdown = false;
+bool fGenerateYacoins = false;
 bool fDaemon = false;
 bool fServer = false;
 bool fTestNet = false;
@@ -604,15 +599,6 @@ const std::locale formats[] = {
 };
 
 const size_t formats_n = sizeof(formats)/sizeof(formats[0]);
-
-std::time_t pt_to_time_t(const bt::ptime& pt)
-{
-    bt::ptime timet_start(boost::gregorian::date(1970,1,1));
-    bt::time_duration diff = pt - timet_start;
-    return diff.ticks()/bt::time_duration::rep_type::ticks_per_second;
-}
-
-LockedPageManager LockedPageManager::instance;
 
 std::string GetDebugLogPathName(){
     return (GetDataDir() / "debug.log").string();
@@ -637,80 +623,6 @@ void ParseString(const string& str, char c, vector<string>& v)
     }
 }
 
-
-string FormatMoney(int64_t n, bool fPlus)
-{
-    // Note: not using straight sprintf here because we do NOT want
-    // localized number formatting.
-    int64_t n_abs = (n > 0 ? n : -n);
-    int64_t quotient = n_abs/COIN;
-    int64_t remainder = n_abs%COIN;
-    string str = strprintf("%" PRId64 ".%06" PRId64, quotient, remainder);
-                    // because COIN is 10^6
-
-    // Right-trim excess zeros before the decimal point:
-    // doesn't this (instead!) remove trailing 0's after the last non zero digit!?
-    int 
-        nTrim = 0;
-
-    for (int i = str.size()-1; (str[i] == '0' && isdigit(str[i-2])); --i)
-        ++nTrim;
-    if (nTrim)
-        str.erase(str.size()-nTrim, nTrim);
-
-    if (n < 0)
-        str.insert((unsigned int)0, 1, '-');
-    else if (fPlus && n > 0)
-        str.insert((unsigned int)0, 1, '+');
-    return str;
-}
-
-
-bool ParseMoney(const string& str, int64_t& nRet)
-{
-    return ParseMoney(str.c_str(), nRet);
-}
-
-bool ParseMoney(const char* pszIn, int64_t& nRet)
-{
-    string strWhole;
-    int64_t nUnits = 0;
-    const char* p = pszIn;
-    while (isspace(*p))
-        p++;
-    for (; *p; p++)
-    {
-        if (*p == '.')
-        {
-            p++;
-            int64_t nMult = CENT*10;
-            while (isdigit(*p) && (nMult > 0))
-            {
-                nUnits += nMult * (*p++ - '0');
-                nMult /= 10;
-            }
-            break;
-        }
-        if (isspace(*p))
-            break;
-        if (!isdigit(*p))
-            return false;
-        strWhole.insert(strWhole.end(), *p);
-    }
-    for (; *p; p++)
-        if (!isspace(*p))
-            return false;
-    if (strWhole.size() > 10) // guard against 63 bit overflow
-        return false;
-    if (nUnits < 0 || nUnits > COIN)
-        return false;
-    int64_t nWhole = atoi64(strWhole);
-    int64_t nValue = nWhole*COIN + nUnits;
-
-    nRet = nValue;
-    return true;
-}
-
 static void InterpretNegativeSetting(string name, map<string, string>& mapSettingsRet)
 {
     // interpret -nofoo as -foo=0 (and -nofoo=0 as -foo=1) as long as -foo not set
@@ -726,19 +638,31 @@ static void InterpretNegativeSetting(string name, map<string, string>& mapSettin
     }
 }
 
-int64_t DecodeDumpTime(const std::string& s)
-{
-    bt::ptime pt;
+int64_t DecodeDumpTime(const std::string &str) {
+    static const boost::posix_time::ptime epoch = boost::posix_time::from_time_t(0);
+    static const std::locale loc(std::locale::classic(),
+        new boost::posix_time::time_input_facet("%Y-%m-%dT%H:%M:%SZ"));
+    std::istringstream iss(str);
+    iss.imbue(loc);
+    boost::posix_time::ptime ptime(boost::date_time::not_a_date_time);
+    iss >> ptime;
+    if (ptime.is_not_a_date_time())
+        return 0;
+    return (ptime - epoch).total_seconds();
+}
 
-    for(size_t i=0; i<formats_n; ++i)
-    {
-        std::istringstream is(s);
-        is.imbue(formats[i]);
-        is >> pt;
-        if(pt != bt::ptime()) break;
+std::string DecodeDumpString(const std::string &str) {
+    std::stringstream ret;
+    for (unsigned int pos = 0; pos < str.length(); pos++) {
+        unsigned char c = str[pos];
+        if (c == '%' && pos+2 < str.length()) {
+            c = (((str[pos+1]>>6)*9+((str[pos+1]-'0')&15)) << 4) |
+                ((str[pos+2]>>6)*9+((str[pos+2]-'0')&15));
+            pos += 2;
+        }
+        ret << c;
     }
-
-    return pt_to_time_t(pt);
+    return ret.str();
 }
 
 std::string EncodeDumpTime(int64_t nTime) {
@@ -747,26 +671,12 @@ std::string EncodeDumpTime(int64_t nTime) {
 
 std::string EncodeDumpString(const std::string &str) {
     std::stringstream ret;
-    BOOST_FOREACH(unsigned char c, str) {
+    for (unsigned char c : str) {
         if (c <= 32 || c >= 128 || c == '%') {
             ret << '%' << HexStr(&c, &c + 1);
         } else {
             ret << c;
         }
-    }
-    return ret.str();
-}
-
-std::string DecodeDumpString(const std::string &str) {
-    std::stringstream ret;
-    for (unsigned int pos = 0; pos < str.length(); pos++) {
-        unsigned char c = str[pos];
-        if (c == '%' && pos+2 < str.length()) {
-            c = (((str[pos+1]>>6)*9+((str[pos+1]-'0')&15)) << 4) | 
-                ((str[pos+2]>>6)*9+((str[pos+2]-'0')&15));
-            pos += 2;
-        }
-        ret << c;
     }
     return ret.str();
 }
@@ -805,7 +715,6 @@ void PrintException(std::exception* pex, const char* pszThread)
     std::string message = FormatException(pex, pszThread);
     LogPrintf("\n\n************************\n%s\n", message);
     fprintf(stderr, "\n\n************************\n%s\n", message.c_str());
-    strMiscWarning = message;
     throw;
 }
 
@@ -830,8 +739,8 @@ const fs::path &GetDataDir(bool fNetSpecific)
     } else {
         path = GetDefaultDataDir();
     }
-    if (fNetSpecific && gArgs.GetBoolArg("-testnet", false))
-        path /= "testnet";
+    if (fNetSpecific)
+        path /= BaseParams().DataDir();
 
     fs::create_directories(path);
 
@@ -1184,42 +1093,29 @@ bool SetupNetworking()
 
 int GetNumCores()
 {
-#if BOOST_VERSION >= 105600
-    return boost::thread::physical_concurrency();
-#else // Must fall back to hardware_concurrency, which unfortunately counts virtual cores
     return boost::thread::hardware_concurrency();
-#endif
+//#if BOOST_VERSION >= 105600
+//    return boost::thread::physical_concurrency();
+//#else // Must fall back to hardware_concurrency, which unfortunately counts virtual cores
+//    return boost::thread::hardware_concurrency();
+//#endif
+}
+
+std::string CopyrightHolders(const std::string& strPrefix)
+{
+    std::string strCopyrightHolders = strPrefix + strprintf(_(COPYRIGHT_HOLDERS), _(COPYRIGHT_HOLDERS_SUBSTITUTION));
+
+    // Check for untranslated substitution to make sure Bitcoin Core copyright is not removed by accident
+    if (strprintf(COPYRIGHT_HOLDERS, COPYRIGHT_HOLDERS_SUBSTITUTION).find("Yacoin Core") == std::string::npos) {
+        strCopyrightHolders += "\n" + strPrefix + "The Yacoin Core developers";
+    }
+    return strCopyrightHolders;
 }
 
 // Obtain the application startup time (used for uptime calculation)
 int64_t GetStartupTime()
 {
     return nStartupTime;
-}
-
-string FormatVersion(int nVersion)
-{
-    if (nVersion%100 == 0)
-        return strprintf("%d.%d.%d", nVersion/1000000, (nVersion/10000)%100, (nVersion/100)%100);
-    else
-        return strprintf("%d.%d.%d.%d", nVersion/1000000, (nVersion/10000)%100, (nVersion/100)%100, nVersion%100);
-}
-
-string FormatFullVersion()
-{
-    return CLIENT_BUILD;
-}
-
-// Format the subversion field according to BIP 14 spec (https://en.bitcoin.it/wiki/BIP_0014)
-std::string FormatSubVersion(const std::string& name, int nClientVersion, const std::vector<std::string>& comments)
-{
-    std::ostringstream ss;
-    ss << "/";
-    ss << name << ":" << FormatVersion(nClientVersion);
-    if (!comments.empty())
-        ss << "(" << boost::algorithm::join(comments, "; ") << ")";
-    ss << "/";
-    return ss.str();
 }
 
 bool NewThread(void(*pfn)(void*), void* parg)

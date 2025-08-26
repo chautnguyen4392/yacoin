@@ -3,7 +3,6 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-/* TACA: NEW CODE START */
 #ifndef BITCOIN_NET_PROCESSING_H
 #define BITCOIN_NET_PROCESSING_H
 
@@ -35,7 +34,6 @@ static constexpr int64_t EXTRA_PEER_CHECK_INTERVAL = 45;
 /** Minimum time an outbound-peer-eviction candidate must be connected for, in order to evict, in seconds */
 static constexpr int64_t MINIMUM_CONNECT_TIME = 30;
 
-extern const unsigned int nPoWTargetSpacing;
 extern CCriticalSection cs_main;
 extern boost::mutex mapHashmutex;
 extern std::map<uint256, uint256> mapHash; // map of (SHA256-hash, chacha-hash)
@@ -109,41 +107,12 @@ bool GetNodeStateStats(NodeId nodeid, CNodeStateStats &stats);
 void Misbehaving(NodeId nodeid, int howmuch);
 
 // Run an instance of the hash calculation thread
-void ThreadHashCalculation(void* parg);
+void ThreadHashCalculation();
 // Stop the hash calculation threads
 void ThreadHashCalculationQuit();
 
 /* Wallet functions */
-extern void Inventory(const uint256& hash);
 void RelayTransaction(const CTransaction& tx, CConnman* connman);
-/* TACA: NEW CODE END */
-
-/** Thread types */
-enum threadId
-{
-    THREAD_SOCKETHANDLER,
-    THREAD_OPENCONNECTIONS,
-    THREAD_MESSAGEHANDLER,
-    THREAD_MINER,
-    THREAD_RPCLISTENER,
-    THREAD_UPNP,
-    THREAD_DNSSEED,
-    THREAD_ADDEDCONNECTIONS,
-    THREAD_DUMPADDRESS,
-    THREAD_RPCHANDLER,
-    THREAD_MINTER,
-    THREAD_SCRIPTCHECK,
-    THREAD_HASHCALCULATION,
-
-    THREAD_MAX
-};
-
-void StartNode(void *parg);
-void StopNode();
-
-extern boost::array<int, THREAD_MAX> vnThreadsRunning;
 
 class CTransaction;
-extern void SyncWithWallets(const CTransaction& tx, const CBlock* pblock = NULL, bool fUpdate = false, bool fConnect = true);
-
 #endif // BITCOIN_NET_PROCESSING_H

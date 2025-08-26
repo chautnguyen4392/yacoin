@@ -13,25 +13,43 @@
 #include "msvc_warnings.push.h"
 #endif
 
-#ifndef BITCOIN_TXDB_H
-#include "txdb-leveldb.h"
-#endif
-
-#ifndef PPCOIN_KERNEL_H
-#include "kernel.h"
-#endif
-
-#ifndef BITCOIN_INIT_H
-#include "init.h"
-#endif
-
-#ifndef YACOIN_RANDOM_NONCE_H
-#include "random_nonce.h"
-#endif
-
-#include "policy/fees.h"
-#include "net_processing.h"
 #include <openssl/sha.h>
+#include <algorithm>
+#include <queue>
+#include <utility>
+
+#include "amount.h"
+#include "chain.h"
+#include "chainparams.h"
+#include "coins.h"
+#include "consensus/consensus.h"
+#include "consensus/tx_verify.h"
+//#include "consensus/merkle.h"
+#include "consensus/validation.h"
+#include "hash.h"
+#include "validation.h"
+#include "net_processing.h"
+#include "policy/fees.h"
+#include "policy/feerate.h"
+#include "policy/policy.h"
+#include "pow.h"
+#include "primitives/transaction.h"
+//#include "script/standard.h"
+#include "script/script.h"
+#include "timedata.h"
+#include "txmempool.h"
+#include "util.h"
+#include "utilmoneystr.h"
+#include "validationinterface.h"
+#include "rpc/mining.h"
+
+#include "txdb.h"
+#include "kernel.h"
+#include "init.h"
+#include "random_nonce.h"
+
+#include "wallet/wallet.h"
+#include "wallet/rpcwallet.h"
 
 using std::auto_ptr;
 using std::list;
@@ -43,10 +61,15 @@ using std::vector;
 
 //////////////////////////////////////////////////////////////////////////////
 //
-// BitcoinMiner
+// YacoinMiner
 //
 
-extern unsigned int nMinerSleep;
+uint64_t nLastBlockTx = 0;
+uint64_t nLastBlockSize = 0;
+uint64_t nMiningTimeStart = 0;
+uint64_t nHashesPerSec = 0;
+uint64_t nHashesDone = 0;
+
 int nBlocksToGenerate = -10;
 
 int static FormatHashBlocks(void* pbuffer, unsigned int len) {
@@ -104,10 +127,6 @@ class COrphan {
   }
 };
 
-uint64_t nLastBlockTx = 0;
-uint64_t nLastBlockSize = 0;
-uint32_t nLastCoinStakeSearchInterval = 0;
-
 // We want to sort transactions by priority and fee, so:
 typedef boost::tuple<double, double, CTransaction*> TxPriority;
 class TxPriorityCompare {
@@ -155,6 +174,17 @@ class CdoTempoaryMockTime {
 //_____________________________________________________________________________
 
 /* NEW IMPLEMENTATION START */
+int64_t UpdateTime(CBlockHeader* pblock, const Consensus::Params& consensusParams, const CBlockIndex* pindexPrev)
+{
+    int64_t nOldTime = pblock->nTime;
+    int64_t nNewTime = std::max(pindexPrev->GetMedianTimePast()+1, GetAdjustedTime());
+
+    if (nOldTime < nNewTime)
+        pblock->nTime = nNewTime;
+
+    return nNewTime - nOldTime;
+}
+
 BlockAssembler::BlockAssembler()
 {
     // Largest block you're willing to create
@@ -415,13 +445,13 @@ bool BlockAssembler::TestPackageTransactions(const CTxMemPool::setEntries& packa
 {
     for (const CTxMemPool::txiter it : package) {
         const CTransaction& tx = it->GetTx();
-        if (!tx.IsFinal(nHeight))
+        if (!IsFinalTx(tx, nHeight, nLockTimeCutoff))
             return false;
     }
     return true;
 }
 
-std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(CWallet* pwallet)
+std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& scriptPubKeyIn)
 {
     int64_t nTimeStart = GetTimeMicros();
 
@@ -439,8 +469,7 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(CWallet* pwallet)
     txNew.vin[0].prevout.SetNull();
     txNew.vout.resize(1);
 
-    CReserveKey reservekey(pwallet);
-    txNew.vout[0].scriptPubKey << reservekey.GetReservedKey() << OP_CHECKSIG;
+    txNew.vout[0].scriptPubKey = scriptPubKeyIn;
 
     // Add coinbase tx as first transaction
     pblock->vtx.push_back(txNew);
@@ -456,7 +485,14 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(CWallet* pwallet)
     } else {
       pblock->nVersion = CURRENT_VERSION_of_block;
     }
+
     // here we can fiddle with time to try to make block generation easier
+    pblock->nTime = GetAdjustedTime();
+    const int64_t nMedianTimePast = pindexPrev->GetMedianTimePast();
+    // TODO: Support LOCKTIME_MEDIAN_TIME_PAST in future (affect consensus rule)
+    nLockTimeCutoff = (STANDARD_LOCKTIME_VERIFY_FLAGS & LOCKTIME_MEDIAN_TIME_PAST)
+                       ? nMedianTimePast
+                       : pblock->GetBlockTime();
 
     // Add transaction to block
     int nPackagesSelected = 0;
@@ -473,17 +509,11 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(CWallet* pwallet)
         LogPrintf("CreateNewBlock (): total size %" PRI64u "\n", nBlockSize);
 
     // Fill in block header and subsidy for coinbase
-    pblock->nBits = GetNextTargetRequired(pindexPrev, false);
-
-    pblock->vtx[0].vout[0].nValue = GetProofOfWorkReward(pblock->nBits);
-
     pblock->hashPrevBlock = pindexPrev->GetBlockHash();
-    pblock->nTime = max(pindexPrev->GetMedianTimePast() + 1,
-                        pblock->GetMaxTransactionTime());
-    pblock->nTime = max(pblock->GetBlockTime(),  // lo & behold this is nTime!?
-                        pindexPrev->GetBlockTime() - nMaxClockDrift);
-    pblock->UpdateTime(pindexPrev);
+    UpdateTime(pblock, Params().GetConsensus(), pindexPrev);
+    pblock->nBits = GetNextTargetRequired(pindexPrev, false);
     pblock->nNonce = 0;
+    pblock->vtx[0].vout[0].nValue = GetProofOfWorkReward(pblock->nBits, 0, chainActive.Height() + 1);
 
     LogPrintf(
         "CreateNewBlock() packages: %.2fms (%d packages, %d updated "
@@ -621,7 +651,7 @@ bool CheckWork(CBlock* pblock, CWallet& wallet, CReserveKey& reservekey) {
   // Found a solution
   {
     LOCK(cs_main);
-    if (pblock->hashPrevBlock != hashBestChain)
+    if (pblock->hashPrevBlock != chainActive.Tip()->blockHash)
       return error("CheckWork () : generated block is stale");
   }
   // Remove key from key pool
@@ -635,8 +665,9 @@ bool CheckWork(CBlock* pblock, CWallet& wallet, CReserveKey& reservekey) {
 
   // Process this block the same as if we had received it from another node
   MeasureTime processBlock;
-  CValidationState state;
-  if (!ProcessBlock(state, pblock, true, nullptr)) {
+  const std::shared_ptr<const CBlock> blockptr = std::make_shared<CBlock>(*pblock);
+  bool fAccepted = ProcessNewBlock(Params(), blockptr, true, nullptr);
+  if (!fAccepted) {
     processBlock.mEnd.stamp();
     LogPrintf("CheckWork(), total time for ProcessBlock = %lu us\n",
            processBlock.getExecutionTime());
@@ -653,18 +684,12 @@ bool CheckWork(CBlock* pblock, CWallet& wallet, CReserveKey& reservekey) {
 //_____________________________________________________________________________
 //_____________________________________________________________________________
 //
-static bool fGenerateBitcoins = false;
 static bool fLimitProcessors = false;
 static int nLimitProcessors = -1;
 
-static string strMintMessage = "Info: Minting suspended due to locked wallet.";
-static string strMintWarning;
-
-double dHashesPerSec;
-::int64_t nHPSTimerStart;
 //_____________________________________________________________________________
 bool check_for_stop_mining(CBlockIndex* pindexPrev) {
-  if ((pindexPrev != chainActive.Tip()) || !fGenerateBitcoins || fShutdown) {
+  if ((pindexPrev != chainActive.Tip()) || !fGenerateYacoins || fShutdown) {
 #ifdef Yac1dot0
     LogPrintf(
         "new block or shutdown!\n"
@@ -676,293 +701,214 @@ bool check_for_stop_mining(CBlockIndex* pindexPrev) {
 }
 
 //_____________________________________________________________________________
-static void YacoinMiner(CWallet* pwallet)  // here fProofOfStake is always false
+static void YacoinMiner() // here fProofOfStake is always false
 {
-  LogPrintf("CPUMiner started for proof-of-work\n");
-  SetThreadPriority(THREAD_PRIORITY_LOWEST);
+    LogPrintf("YacoinMiner -- started\n");
+    SetThreadPriority(THREAD_PRIORITY_LOWEST);
 
-  // Make this thread recognisable as the mining thread
-  RenameThread("yacoin-PoW-miner");
+    // Make this thread recognisable as the mining thread
+    RenameThread("yacoin-miner");
 
-  // Each thread has its own key and counter
-  CReserveKey reservekey(pwallet);
+    unsigned int nExtraNonce = 0;
 
-  unsigned int nExtraNonce = 0;
+    CWallet * pWallet = NULL;
 
-  while (fGenerateBitcoins && nBlocksToGenerate != 0) {
-    while (IsInitialBlockDownload() ||
-           (g_connman->GetNodeCount(CConnman::CONNECTIONS_ALL) == 0 && !fTestNet  // TestNet can mine stand alone!
-            // could be that if there is more than one stand alone mining
-            // forks on the blockchain can't be resolved?
-            )) {
-      Sleep(nMillisecondsPerSecond);
-      if (fShutdown || !fGenerateBitcoins)  // someone shut off the miner
-        break;
+#ifdef ENABLE_WALLET
+    pWallet = GetFirstWallet();
+
+
+    if (!EnsureWalletIsAvailable(pWallet, false)) {
+        LogPrintf("YacoinMiner -- Wallet not available\n");
     }
-    if (fShutdown || !fGenerateBitcoins)  // someone shut off the miner
-      break;
+#endif
 
-    while (pwallet->IsLocked()) {
-      strMintWarning = strMintMessage;
-      Sleep(nMillisecondsPerSecond);
-    }
-    strMintWarning = "";
-    //
-    // Create new block
-    //
-    unsigned int nTransactionsUpdatedLast = mempool.GetTransactionsUpdated();
-
-    CBlockIndex* pindexPrev = chainActive.Tip();
-
-    // Create new block
-    std::unique_ptr<CBlockTemplate> pblocktemplate(BlockAssembler().CreateNewBlock(pwallet));
-    if (!pblocktemplate.get())
+    if (pWallet == NULL)
+    {
+        LogPrintf("pWallet is NULL\n");
         return;
-    CBlock *pblock = &pblocktemplate->block;
-    if (!pblock)
-        return;
-
-    IncrementExtraNonce(pblock, pindexPrev, nExtraNonce);
-
-    bool fYac1dot0BlockOrTx = false;
-    if ((pindexPrev->nHeight + 1) >= nMainnetNewLogicBlockNumber) {
-      fYac1dot0BlockOrTx = true;
     }
-    LogPrintf("Running YACoinMiner with %" PRIszu
-              " transaction"
-              "%s"
-              " in block (%u bytes)"
-              "\n"
-              "",
-              pblock->vtx.size(), pblock->vtx.size() > 1 ? "s" : "",
-              ::GetSerializeSize(*pblock, SER_NETWORK, PROTOCOL_VERSION));
-    //
-    // Pre-build hash buffers
-    //
-    char pmidstatebuf[32 + 16];
-    char* pmidstate = alignup<16>(pmidstatebuf);
-    char pdatabuf[128 + 16];
-    char* pdata = alignup<16>(pdatabuf);
-    char phash1buf[64 + 16];
-    char* phash1 = alignup<16>(phash1buf);
 
-    FormatHashBuffers(pblock, pmidstate, pdata, phash1);
+    // Each thread has its own key and counter
+    CReserveKey reservekey(pWallet);
+    std::shared_ptr<CReserveScript> coinbase_script;
+    pWallet->GetScriptForMining(coinbase_script);
 
-    ::int64_t& nBlockTime = *(::int64_t*)(pdata + 64 + 4);
-    unsigned int& nBlockNonce = *(unsigned int*)(pdata + 64 + 16);
+    if (!coinbase_script)
+        LogPrintf("coinbaseScript is NULL\n");
 
-    Big.randomize_the_nonce(nBlockNonce);  // lazy initialization performed here
+    if (coinbase_script->reserveScript.empty())
+        LogPrintf("coinbaseScript is empty\n");
 
-    //
-    // Search
-    //
-    ::int64_t nStart = GetTime();
-
-    uint256 hashTarget =
-        (CBigNum().SetCompact(pblock->nBits)).getuint256();  // PoW hashTarget
-
-    LogPrintf("Hash target %s""\n", hashTarget.GetHex().substr(0, 16));
-
-    uint256 result;
-    unsigned int nHashesDone = 0;
-
-#ifndef _MSC_VER
-    LogPrintf("Starting mining loop\n");
-#endif
-    while (fGenerateBitcoins && nBlocksToGenerate != 0) {
-      unsigned int nNonceFound;
-
-      nNonceFound =
-          scanhash_scrypt((char*)&pblock->nVersion,
-                          // max_nonce,
-                          nHashesDone, UBEGIN(result),
-                          GetNfactor(pblock->nTime, fYac1dot0BlockOrTx),
-                          pindexPrev, &hashTarget);
-      // Check if something found
-      pblock->nNonce = nNonceFound;
-#ifdef Yac1dot0
-      LogPrintf(
-          "hash count %d"
-          "\n",
-          nHashesDone);
-#endif
-      if (result <= hashTarget) {  // Found a solution
-#ifdef _MSC_VER
-#ifdef _DEBUG
-        LogPrintf("target: %s\n", hashTarget.ToString());
-        LogPrintf("result: %s\n", result.ToString());
-#endif
-#endif
-        Yassert(result == pblock->GetHash());
-        if (!pblock->SignBlock(*pwalletMain))  // wallet is locked
+    try {
+        // Throw an error if no script was provided.  This can happen
+        // due to some internal error but also if the keypool is empty.
+        // In the latter case, already the pointer is NULL.
+        if (!coinbase_script || coinbase_script->reserveScript.empty())
         {
-          strMintWarning = strMintMessage;
-          break;
+            throw std::runtime_error("No coinbase script available (mining requires a wallet)");
         }
-        strMintWarning = "";
 
-        SetThreadPriority(THREAD_PRIORITY_NORMAL);
-        if (CheckWork(pblock, *pwalletMain, reservekey)) {
-            LogPrintf(
-              "\nCPUMiner : proof-of-work block found \n"
-              "%s"
-              "\n\n\a"
-              "",
-              pblock->GetHash().ToString());
-          if (nBlocksToGenerate > 0) {
-            nBlocksToGenerate--;
-            LogPrintf("Remaining blocks to mine %d\n", nBlocksToGenerate);
-          }
-        }
-        SetThreadPriority(THREAD_PRIORITY_LOWEST);
-        break;
-      }
-      // Meter hashes/sec
-      static ::int64_t nHashCounter;
-
-      if (0 == nHPSTimerStart) nHPSTimerStart = GetTimeMillis();
-      nHashCounter += nHashesDone;
-      nHashesDone = 0;
-
-      ::int64_t nNow = GetTimeMillis();
-
-      if ((nNow - nHPSTimerStart) >
-          (40 * nMillisecondsPerSecond))  // no comment needed!
-      {
-        static CCriticalSection mining_stats;
-        {
-          LOCK(mining_stats);
-          if ((nNow - nHPSTimerStart) > (30 * nMillisecondsPerSecond)) {
-            static ::int64_t nLogTime;  // = 0
-            // if (GetTime() - nLogTime > 30 * 60)
-            if (GetTime() - nLogTime >
-                30)  // 30 seconds always true the first time!
-            {
-              dHashesPerSec =
-                  1000.0 * nHashCounter / (GetTimeMillis() - nHPSTimerStart);
-              LogPrintf(
-                  "\n"
-                  "hashmeter %3d CPU%s %.1f hash/s\n",
-                  vnThreadsRunning[THREAD_MINER],
-                  (vnThreadsRunning[THREAD_MINER] > 1) ? "s" : "",
-                  dHashesPerSec);
-              if ((nStatisticsNumberOfBlocks > 0) &&
-                  (nStatisticsNumberOfBlocks2000 > 0) &&
-                  (nStatisticsNumberOfBlocks1000 > 0) &&
-                  (nStatisticsNumberOfBlocks200 > 0) &&
-                  (nStatisticsNumberOfBlocks100 > 0)) {
-                LogPrintf("long average block period %" PRId64
-                       " sec (divisor %d)\n"
-                       "long average block period %" PRId64
-                       " sec (divisor %d)\n"
-                       "long average block period %" PRId64
-                       " sec (divisor %d)\n"
-                       "long average block period %" PRId64
-                       " sec (divisor %d)\n"
-                       "long average block period %" PRId64
-                       " sec (divisor %d)\n"
-                       "",
-                       nLongAverageBP, nStatisticsNumberOfBlocks,
-                       nLongAverageBP2000, nStatisticsNumberOfBlocks2000,
-                       nLongAverageBP1000, nStatisticsNumberOfBlocks1000,
-                       nLongAverageBP200, nStatisticsNumberOfBlocks200,
-                       nLongAverageBP100, nStatisticsNumberOfBlocks100);
-              }
-              LogPrintf("\n");
-              nHPSTimerStart = GetTimeMillis();
-              nHashCounter = 0;
-              nLogTime = GetTime();
+        LogPrintf("Starting mining loop\n");
+        while (fGenerateYacoins && nBlocksToGenerate != 0) {
+            while (IsInitialBlockDownload() || (g_connman->GetNodeCount(CConnman::CONNECTIONS_ALL) == 0 && !fTestNet)) {
+                Sleep(nMillisecondsPerSecond);
+                if (fShutdown || !fGenerateYacoins) // someone shut off the miner
+                    break;
             }
-            Sleep(nOneMillisecond);
-          }
+
+            if (fShutdown || !fGenerateYacoins) // someone shut off the miner
+                break;
+
+            while (pWallet->IsLocked()) {
+                Sleep(nMillisecondsPerSecond);
+            }
+            //
+            // Create new block
+            //
+            unsigned int nTransactionsUpdatedLast = mempool.GetTransactionsUpdated();
+            CBlockIndex * pindexPrev = chainActive.Tip();
+
+            // Create new block
+            std::unique_ptr < CBlockTemplate > pblocktemplate(BlockAssembler().CreateNewBlock(coinbase_script->reserveScript));
+            if (!pblocktemplate.get())
+            {
+                LogPrintf("YacoinMiner -- Keypool ran out, please call keypoolrefill before restarting the mining thread\n");
+                return;
+            }
+
+            CBlock * pblock = &pblocktemplate->block;
+            IncrementExtraNonce(pblock, pindexPrev, nExtraNonce);
+
+            bool fYac1dot0BlockOrTx = false;
+            if ((pindexPrev->nHeight + 1) >= nMainnetNewLogicBlockNumber) {
+                fYac1dot0BlockOrTx = true;
+            }
+
+            LogPrintf("Running YACoinMiner with %u transactions in block (%u bytes)\n", pblock->vtx.size(), ::GetSerializeSize( * pblock, SER_NETWORK, PROTOCOL_VERSION));
+
+            //
+            // Search
+            //
+            ::int64_t nStart = GetTime();
+            uint256 hashTarget = (CBigNum().SetCompact(pblock->nBits)).getuint256(); // PoW hashTarget
+            LogPrintf("Hash target %s\n", hashTarget.GetHex().substr(0, 16));
+            uint256 hash;
+
+            while (fGenerateYacoins && nBlocksToGenerate != 0) {
+                hash = pblock->GetHash();
+                if (hash <= hashTarget) { // Found a solution
+                    LogPrintf("target: %s\n", hashTarget.ToString());
+                    LogPrintf("result: %s\n", hash.ToString());
+                    Yassert(hash == pblock->GetHash());
+                    if (!pblock->SignBlock( * pWallet)) // wallet is locked
+                    {
+                        break;
+                    }
+
+                    // Found a solution
+                    SetThreadPriority(THREAD_PRIORITY_NORMAL);
+                    if (CheckWork(pblock, * pWallet, reservekey)) {
+                        LogPrintf("YacoinMiner:\n  proof-of-work found\n  hash: %s\n  target: %s\n", hash.GetHex(), hashTarget.GetHex());
+
+                        if (nBlocksToGenerate > 0) {
+                            nBlocksToGenerate--;
+                            LogPrintf("Remaining blocks to mine %d\n", nBlocksToGenerate);
+                        }
+                    }
+                    SetThreadPriority(THREAD_PRIORITY_LOWEST);
+                    break;
+                }
+                pblock->nNonce += 1;
+                nHashesDone += 1;
+
+                // Meter hashes/sec
+                ::int64_t nNow = GetTimeMicros();
+                static CCriticalSection mining_stats;
+                {
+                    LOCK(mining_stats);
+                    if ((nNow - nMiningTimeStart) > (60 * 1000000)) {
+                        nHashesPerSec = nHashesDone / (((GetTimeMicros() - nMiningTimeStart) / 1000000) + 1);
+                        LogPrintf("hash count %d\n", nHashesDone);
+                        LogPrintf("hashmeter %.1f hash/s\n", nHashesPerSec);
+                        nMiningTimeStart = GetTimeMicros();
+                        nHashesDone = 0;
+                    }
+                }
+
+                // Check for stop or if block needs to be rebuilt
+                boost::this_thread::interruption_point();
+                if (pblock->nNonce >= 0xffff0000)
+                    break;
+                if (mempool.GetTransactionsUpdated() != nTransactionsUpdatedLast && GetTime() - nStart > 60)
+                    break;
+                if (pindexPrev != chainActive.Tip() || !fGenerateYacoins || fShutdown)
+                    break;
+                if (g_connman->GetNodeCount(CConnman::CONNECTIONS_ALL) == 0 && !fTestNet)
+                    break;
+
+                // Update nTime every few seconds
+                pblock->nTime = max(pindexPrev->GetMedianTimePast() + 1, pblock->GetMaxTransactionTime());
+                pblock->nTime = max(pblock->GetBlockTime(), pindexPrev->GetBlockTime() - nMaxClockDrift);
+                pblock->UpdateTime(pindexPrev);
+
+                if (pblock->GetBlockTime() >= ((::int64_t) pblock->vtx[0].nTime + nMaxClockDrift)) {
+                    LogPrintf("block drift too far behind, restarting miner.\n");
+                    break; // need to update coinbase timestamp
+                }
+            }
         }
-      }
-      // Check for stop or if block needs to be rebuilt
-      if (check_for_stop_mining(pindexPrev) || (g_connman->GetNodeCount(CConnman::CONNECTIONS_ALL) == 0 && !fTestNet))
-        break;
-      if (fLimitProcessors &&
-          (vnThreadsRunning[THREAD_MINER] > nLimitProcessors)) {
-        return;
-      }
-
-      // Update nTime every few seconds
-      pblock->nTime = max(pindexPrev->GetMedianTimePast() + 1,
-                          pblock->GetMaxTransactionTime());
-      pblock->nTime = max(pblock->GetBlockTime(),
-                          pindexPrev->GetBlockTime() - nMaxClockDrift);
-      pblock->UpdateTime(pindexPrev);
-      nBlockTime = ByteReverse(pblock->nTime);
-
-      if (pblock->GetBlockTime() >=
-          ((::int64_t)pblock->vtx[0].nTime + nMaxClockDrift)) {
-#ifdef _MSC_VER
-        //    #ifdef _DEBUG
-        LogPrintf("block drift too far behind, restarting miner.\n");
-//    #endif
-#endif
-        break;  // need to update coinbase timestamp
-      }
     }
-  }
-  LogPrintf("CPUMiner stopped for proof-of-work\n");
+    catch (const boost::thread_interrupted&)
+    {
+        LogPrintf("YacoinMiner -- terminated\n");
+    }
+    catch (const std::runtime_error &e)
+    {
+        LogPrintf("YacoinMiner -- runtime error: %s\n", e.what());
+    }
+
+    LogPrintf("YacoinMiner stopped for proof-of-work\n");
 }
-//_____________________________________________________________________________
 
-void static ThreadYacoinMiner(void* parg) {
-  CWallet* pwallet = (CWallet*)parg;  // what kind of c++ cast is this?
-  try {
-    ++vnThreadsRunning[THREAD_MINER];
-    YacoinMiner(pwallet);
-    --vnThreadsRunning[THREAD_MINER];
-  } catch (std::exception& e) {
-    --vnThreadsRunning[THREAD_MINER];
-    PrintException(&e, "ThreadYacoinMiner()");
-  } catch (...) {
-    --vnThreadsRunning[THREAD_MINER];
-    PrintException(NULL, "ThreadYacoinMiner()");
-  }
-  nHPSTimerStart = 0;
-  if (0 == vnThreadsRunning[THREAD_MINER]) dHashesPerSec = 0;
-  LogPrintf("ThreadYacoinMiner exiting, %d thread%s remaining\n",
-         vnThreadsRunning[THREAD_MINER],
-         (0 < vnThreadsRunning[THREAD_MINER])
-             ? ((1 < vnThreadsRunning[THREAD_MINER]) ? "s" : "")
-             : "s");
-}
-//_____________________________________________________________________________
+int GenerateYacoins(bool fGenerate, int nThreads, int nblocks)
+{
+    static boost::thread_group* minerThreads = NULL;
 
-// here we add the missing PoW mining code from 0.4.4
-void GenerateYacoins(bool fGenerate, CWallet* pwallet, int nblocks) {
-  fGenerateBitcoins = fGenerate;
-  nLimitProcessors = gArgs.GetArg("-genproclimit", -1);
-  if (nLimitProcessors == 0) fGenerateBitcoins = false;
-  fLimitProcessors = (nLimitProcessors != -1);
+    int numCores = GetNumCores();
+    if (nThreads < 0)
+        nThreads = numCores;
+    LogPrintf("%d processors\n", numCores);
 
-  if (fGenerate) {
+    if (minerThreads != NULL)
+    {
+        fGenerateYacoins = false;
+        minerThreads->interrupt_all();
+        minerThreads->join_all();
+        delete minerThreads;
+        minerThreads = NULL;
+    }
+
+    if (nThreads == 0 || !fGenerate)
+        return numCores;
+
+    minerThreads = new boost::thread_group();
     nBlocksToGenerate = nblocks;
-    int nProcessors = boost::thread::hardware_concurrency();
+    fGenerateYacoins = fGenerate;
+    nLimitProcessors = gArgs.GetArg("-genproclimit", DEFAULT_GENERATE_THREADS);
 
-    LogPrintf("%d processors\n", nProcessors);
-    if (nProcessors < 1) nProcessors = 1;
-    if (fLimitProcessors && (nProcessors > nLimitProcessors))
-      nProcessors = nLimitProcessors;
-    int nAddThreads = nProcessors - vnThreadsRunning[THREAD_MINER];
+    //Reset metrics
+    nMiningTimeStart = GetTimeMicros();
+    nHashesDone = 0;
+    nHashesPerSec = 0;
 
-    LogPrintf("Starting %d YacoinMiner thread%s\n", nAddThreads,
-           (1 < nAddThreads) ? "s" : "");
-    for (int i = 0; i < nAddThreads; ++i) {
-      if (!NewThread(ThreadYacoinMiner, pwallet))
-        LogPrintf("Error: NewThread(ThreadBitcoinMiner) failed\n");
-      Sleep(nTenMilliseconds);
+    LogPrintf("Starting %d YacoinMiner thread%s\n", nThreads, (1 < nThreads) ? "s" : "");
+    for (int i = 0; i < nThreads; i++){
+        minerThreads->create_thread(&YacoinMiner);
     }
 
     while (nBlocksToGenerate > 0) {
       Sleep(nMillisecondsPerSecond);
     }
-  }
+
+    return(numCores);
 }
-//_____________________________________________________________________________
-//_____________________________________________________________________________
-#ifdef _MSC_VER
-#include "msvc_warnings.pop.h"
-#endif

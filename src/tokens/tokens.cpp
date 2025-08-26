@@ -3,52 +3,42 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <regex>
-#include <script/script.h>
-#include <version.h>
-
-//#include <streams.h>
-#include <serialize.h>
-
-#include <primitives/transaction.h>
-#include <iostream>
-
-//#include <script/standard.h>
-#include <script/script.h>
-
+#include "regex"
+#include "clientversion.h"
+#include "streams.h"
+#include "serialize.h"
+#include "primitives/transaction.h"
+#include "script/script.h"
+#include "script/standard.h"
 #include "util.h"
 #include "base58.h"
-
-//#include <chainparams.h>
-//#include <validation.h>
-//#include <txmempool.h>
-//#include <tinyformat.h>
-//#include <consensus/validation.h>
+#include "chainparams.h"
+#include "validation.h"
+#include "txmempool.h"
+#include "tinyformat.h"
+#include "consensus/validation.h"
 #include "main.h"
 #include "memusage.h"
 
-//#include <wallet/wallet.h>
+//#include "wallet/wallet.h"
 //#include "wallet/coincontrol.h"
 //#include "wallet/wallet.h"
-#include <wallet.h>
+#include "wallet/wallet.h"
+#include "rpc/protocol.h"
 
+#include <iostream>
 #include <boost/algorithm/string.hpp>
 #include <boost/variant.hpp>
 
-//#include <rpc/protocol.h>
-#include <bitcoinrpc.h>
-
-#include <net.h>
+#include "net.h"
 #include "tokens.h"
 #include "tokendb.h"
 #include "tokentypes.h"
-#include "coins.h"
-#include "coincontrol.h"
+#include "wallet/coincontrol.h"
 #include "protocol.h"
-//#include "utilmoneystr.h" -> replaced with util.h
-//#include "coins.h" -> not have coinsview
+#include "utilmoneystr.h"
+#include "coins.h"
 #include "LibBoolEE.h"
-#include "streams.h"
 
 #define SIX_MONTHS 15780000 // Six months worth of seconds
 
@@ -1097,7 +1087,7 @@ bool CTokensCache::ContainsToken(const std::string& tokenName)
     return CheckIfTokenExists(tokenName);
 }
 
-bool CTokensCache::UndoTokenCoin(const CTxOut& prevTxout, const COutPoint& out)
+bool CTokensCache::UndoTokenCoin(const Coin& coin, const COutPoint& out)
 {
     std::string strAddress = "";
     std::string tokenName = "";
@@ -1106,11 +1096,11 @@ bool CTokensCache::UndoTokenCoin(const CTxOut& prevTxout, const COutPoint& out)
     // Get the token tx from the script
     int nType = -1;
     bool fIsOwner = false;
-    if(prevTxout.scriptPubKey.IsTokenScript(nType, fIsOwner)) {
+    if(coin.out.scriptPubKey.IsTokenScript(nType, fIsOwner)) {
 
         if (nType == TX_NEW_TOKEN && !fIsOwner) {
             CNewToken token;
-            if (!TokenFromScript(prevTxout.scriptPubKey, token, strAddress)) {
+            if (!TokenFromScript(coin.out.scriptPubKey, token, strAddress)) {
                 return error("%s : Failed to get token from script while trying to undo token spend. OutPoint : %s",
                              __func__,
                              out.ToString());
@@ -1120,7 +1110,7 @@ bool CTokensCache::UndoTokenCoin(const CTxOut& prevTxout, const COutPoint& out)
             nAmount = token.nAmount;
         } else if (nType == TX_TRANSFER_TOKEN) {
             CTokenTransfer transfer;
-            if (!TransferTokenFromScript(prevTxout.scriptPubKey, transfer, strAddress))
+            if (!TransferTokenFromScript(coin.out.scriptPubKey, transfer, strAddress))
                 return error(
                         "%s : Failed to get transfer token from script while trying to undo token spend. OutPoint : %s",
                         __func__,
@@ -1130,7 +1120,7 @@ bool CTokensCache::UndoTokenCoin(const CTxOut& prevTxout, const COutPoint& out)
             nAmount = transfer.nAmount;
         } else if (nType == TX_NEW_TOKEN && fIsOwner) {
             std::string ownerName;
-            if (!OwnerTokenFromScript(prevTxout.scriptPubKey, ownerName, strAddress))
+            if (!OwnerTokenFromScript(coin.out.scriptPubKey, ownerName, strAddress))
                 return error(
                         "%s : Failed to get owner token from script while trying to undo token spend. OutPoint : %s",
                         __func__, out.ToString());
@@ -1138,7 +1128,7 @@ bool CTokensCache::UndoTokenCoin(const CTxOut& prevTxout, const COutPoint& out)
             nAmount = OWNER_TOKEN_AMOUNT;
         } else if (nType == TX_REISSUE_TOKEN) {
             CReissueToken reissue;
-            if (!ReissueTokenFromScript(prevTxout.scriptPubKey, reissue, strAddress))
+            if (!ReissueTokenFromScript(coin.out.scriptPubKey, reissue, strAddress))
                 return error(
                         "%s : Failed to get reissue token from script while trying to undo token spend. OutPoint : %s",
                         __func__, out.ToString());
@@ -1559,7 +1549,7 @@ bool CTokensCache::DumpCacheToDatabase()
             // Save the new transfers by updating the quantity in the database
             for (auto newTransfer : setNewTransferTokensToAdd) {
                 auto pair = std::make_pair(newTransfer.transfer.strName, newTransfer.address);
-                // During init and reindex-token it disconnects and verifies blocks, can create a state where vNewTransfer will contain transfers that have already been spent. So if they aren't in the map, we can skip them.
+                // During init and reindex-fast it disconnects and verifies blocks, can create a state where vNewTransfer will contain transfers that have already been spent. So if they aren't in the map, we can skip them.
                 if (mapTokensAddressAmount.count(pair)) {
                     if (!ptokensdb->WriteTokenAddressQuantity(newTransfer.transfer.strName, newTransfer.address,
                                                               mapTokensAddressAmount.at(pair))) {
@@ -2515,11 +2505,11 @@ void GetAllMyTokens(CWallet* pwallet, std::vector<std::string>& names, int nMinC
 bool GetAllMyTokenBalances(std::map<std::string, std::vector<COutput> >& outputs, std::map<std::string, CAmount>& amounts, const int confirmations, const std::string& prefix) {
 
     // Return false if no wallet was found to compute token balances
-    if (!vpwalletRegistered.size())
+    if (!vpwallets.size())
         return false;
 
     // Get the map of tokennames to outputs
-    vpwalletRegistered[0]->AvailableTokens(outputs, true, nullptr, 1, MAX_MONEY, MAX_MONEY, 0, confirmations);
+    vpwallets[0]->AvailableTokens(outputs, true, nullptr, 1, MAX_MONEY, MAX_MONEY, 0, confirmations);
 
     // Loop through all pairs of Token Name -> vector<COutput>
     for (const auto& pair : outputs) {
@@ -2527,7 +2517,7 @@ bool GetAllMyTokenBalances(std::map<std::string, std::vector<COutput> >& outputs
             CAmount balance = 0;
             for (auto txout : pair.second) { // Compute balance of token by summing all Available Outputs
                 CTokenOutputEntry data;
-                if (GetTokenData(txout.tx->vout[txout.i].scriptPubKey, data))
+                if (GetTokenData(txout.tx->tx->vout[txout.i].scriptPubKey, data))
                     balance += data.nAmount;
             }
             amounts.insert(std::make_pair(pair.first, balance));
@@ -2540,19 +2530,19 @@ bool GetAllMyTokenBalances(std::map<std::string, std::vector<COutput> >& outputs
 bool GetMyTokenBalance(const std::string& name, CAmount& balance, const int& confirmations) {
 
     // Return false if no wallet was found to compute token balances
-    if (!vpwalletRegistered.size())
+    if (!vpwallets.size())
         return false;
 
     // Get the map of tokennames to outputs
     std::map<std::string, std::vector<COutput> > outputs;
-    vpwalletRegistered[0]->AvailableTokens(outputs, true, nullptr, 1, MAX_MONEY, MAX_MONEY, 0, confirmations);
+    vpwallets[0]->AvailableTokens(outputs, true, nullptr, 1, MAX_MONEY, MAX_MONEY, 0, confirmations);
 
     // Loop through all pairs of Token Name -> vector<COutput>
     if (outputs.count(name)) {
         auto& ref = outputs.at(name);
         for (const auto& txout : ref) {
             CTokenOutputEntry data;
-            if (GetTokenData(txout.tx->vout[txout.i].scriptPubKey, data)) {
+            if (GetTokenData(txout.tx->tx->vout[txout.i].scriptPubKey, data)) {
                 balance += data.nAmount;
             }
         }
@@ -2625,8 +2615,7 @@ bool CreateTokenTransaction(CWallet* pwallet, CCoinControl& coinControl, const s
     // Currently, the lock address is same as the change address
     CAmount lockAmount = GetLockAmount(tokenType) * tokens.size();
     const CKeyID& keyID = boost::get<CKeyID>(coinControl.destChange);
-    CScript feeLockScriptPubKey;
-    feeLockScriptPubKey.SetCsvP2PKH(feeLockDuration, keyID);
+    CScript feeLockScriptPubKey = GetScriptForCsvP2PKH(feeLockDuration, keyID);
 
     CAmount curBalance = pwallet->GetBalance();
 
@@ -2781,8 +2770,7 @@ bool CreateReissueTokenTransaction(CWallet* pwallet, CCoinControl& coinControl, 
     // Assign the correct lock amount and the correct lock address depending on the type of token issuance that is happening
     // Currently, the lock address is same as the change address
     const CKeyID& keyID = boost::get<CKeyID>(coinControl.destChange);
-    CScript feeLockScriptPubKey;
-    feeLockScriptPubKey.SetCsvP2PKH(feeLockDuration, keyID);
+    CScript feeLockScriptPubKey = GetScriptForCsvP2PKH(feeLockDuration, keyID);
     CRecipient recipient = {feeLockScriptPubKey, lockAmount, fSubtractFeeFromAmount};
     vecSend.push_back(recipient);
 
@@ -2869,7 +2857,7 @@ bool CreateTransferTokenTransaction(CWallet* pwallet, const CCoinControl& coinCo
 bool SendTokenTransaction(CWallet* pwallet, CWalletTx& transaction, CReserveKey& reserveKey, std::pair<int, std::string>& error, std::string& txid)
 {
     CValidationState state;
-    if (!pwallet->CommitTransaction(transaction, reserveKey)) {
+    if (!pwallet->CommitTransaction(transaction, reserveKey, g_connman.get(), state)) {
         error = std::make_pair(RPC_WALLET_ERROR, strprintf("Error: The transaction %s was rejected!", transaction.GetHash().GetHex().c_str()));
         return false;
     }
@@ -2881,8 +2869,8 @@ bool SendTokenTransaction(CWallet* pwallet, CWalletTx& transaction, CReserveKey&
 bool VerifyWalletHasToken(const std::string& token_name, std::pair<int, std::string>& pairError)
 {
     CWallet* pwallet;
-    if (vpwalletRegistered.size() > 0)
-        pwallet = vpwalletRegistered[0];
+    if (vpwallets.size() > 0)
+        pwallet = vpwallets[0];
     else {
         pairError = std::make_pair(RPC_WALLET_ERROR, strprintf("Wallet not found. Can't verify if it contains: %s", token_name));
         return false;

@@ -40,7 +40,6 @@
 class CScheduler;
 class CNode;
 
-/* TACA: NEW CODE BEGIN */
 namespace boost {
     class thread_group;
 } // namespace boost
@@ -90,7 +89,7 @@ static const size_t DEFAULT_MAXSENDBUFFER    = 1 * 1000;
 
 static const ServiceFlags REQUIRED_SERVICES = NODE_NETWORK;
 
-// NOTE: When adjusting this, update rpcnet:setban's help ("24h")
+// NOTE: When adjusting this, update rpc/net:setban's help ("24h")
 static const unsigned int DEFAULT_MISBEHAVING_BANTIME = 60 * 60 * 24;  // Default 24-hour ban
 // Median starting height of all connected peers.
 extern int nMedianStartingHeight;
@@ -856,20 +855,5 @@ public:
 
 /** Return a timestamp in the future (in microseconds) for exponentially distributed events. */
 int64_t PoissonNextSend(int64_t nNow, int average_interval_seconds);
-
-struct SeedSpec6 {
-    uint8_t addr[16];
-    uint16_t port;
-};
-
-struct CDNSSeedData {
-    std::string host;
-    bool supportsServiceBitsFiltering;
-    CDNSSeedData(const std::string &strHost, bool supportsServiceBitsFilteringIn) : host(strHost), supportsServiceBitsFiltering(supportsServiceBitsFilteringIn) {}
-};
-
-extern std::vector<CDNSSeedData> vSeeds;
-extern std::vector<SeedSpec6> vFixedSeeds;
-/* TACA: NEW CODE END */
 
 #endif
