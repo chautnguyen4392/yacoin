@@ -155,7 +155,7 @@ public:
         fRequireStandard = true;
         fMineBlocksOnDemand = false;
 #ifndef LOW_DIFFICULTY_FOR_DEVELOPMENT
-        fMiningRequiresPeers = true;
+        fMiningRequiresPeers = false;
 #else
         fMiningRequiresPeers = false;
 #endif
