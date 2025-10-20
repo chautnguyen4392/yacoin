@@ -342,19 +342,23 @@ UniValue getwork(const JSONRPCRequest& request)
     if (IsInitialBlockDownload())
         throw JSONRPCError(RPC_CLIENT_IN_INITIAL_DOWNLOAD, "Yacoin is downloading blocks...");
 
-    typedef std::map<uint256, std::pair<CBlock*, CScript> > mapNewBlock_t;
-    static mapNewBlock_t mapNewBlock;    // FIXME: thread safety
+    typedef std::map<uint256, std::pair<std::shared_ptr<CBlock>, CScript> > mapNewBlock_t;
+    static std::mutex mining_mutex;  // Protect mapNewBlock and vNewBlockTemplate
+    static mapNewBlock_t mapNewBlock;    // Now thread-safe with mutex
+    static std::vector<std::shared_ptr<CBlockTemplate>> vNewBlockTemplate;
     static CReserveKey reservekey(pwallet);
     std::shared_ptr<CReserveScript> coinbase_script;
     pwallet->GetScriptForMining(coinbase_script);
 
     if (request.params.size() == 0)
     {
+        // Lock mutex for entire getwork operation to prevent race conditions
+        std::lock_guard<std::mutex> lock(mining_mutex);
+        
         // Update block
         static unsigned int nTransactionsUpdatedLast;
         static CBlockIndex* pindexPrev;
         static int64_t nStart;
-        static std::unique_ptr<CBlockTemplate> pblocktemplate;
         unsigned int nTransactionsUpdated = mempool.GetTransactionsUpdated();
 
         if ((pindexPrev != chainActive.Tip())
@@ -366,6 +370,7 @@ UniValue getwork(const JSONRPCRequest& request)
             {
                 // Deallocate old blocks since they're obsolete now
                 mapNewBlock.clear();
+                vNewBlockTemplate.clear();
             }
 
             // Clear pindexPrev so future getworks make a new block, despite any failures from here on
@@ -377,14 +382,15 @@ UniValue getwork(const JSONRPCRequest& request)
             nStart = GetTime();
 
             // Create new block
-            pblocktemplate = BlockAssembler().CreateNewBlock(coinbase_script->reserveScript);
-            if (!pblocktemplate.get())
+            auto pblocktemplate = BlockAssembler().CreateNewBlock(coinbase_script->reserveScript);
+            if (!pblocktemplate)
                 throw JSONRPCError(RPC_INTERNAL_ERROR, "Couldn't create new block");
+            vNewBlockTemplate.push_back(std::shared_ptr<CBlockTemplate>(std::move(pblocktemplate)));
 
             // Need to update only after we know CreateNewBlock succeeded
             pindexPrev = pindexPrevNew;
         }
-        CBlock* pblock = &pblocktemplate->block; // pointer for convenience
+        CBlock* pblock = &vNewBlockTemplate.back()->block; // pointer for convenience
         // Update nTime
         pblock->UpdateTime(pindexPrev);
         pblock->nNonce = 0;
@@ -393,19 +399,10 @@ UniValue getwork(const JSONRPCRequest& request)
         static unsigned int nExtraNonce = 0;
         IncrementExtraNonce(pblock, pindexPrev, nExtraNonce);
 
-        // Save
-        mapNewBlock[pblock->hashMerkleRoot] = std::make_pair(pblock, pblock->vtx[0].vin[0].scriptSig);
-
-        LogPrintf("rpc getwork,\n"
-               "params.size() == 0,\n"
-               "pblock->nVersion = %d,\n"
-               "pblock->hashPrevBlock = %s,\n"
-               "pblock->hashMerkleRoot = %s,\n"
-               "pblock->nTime = %lld,\n"
-               "pblock->nBits = %u,\n"
-               "pblock->nNonce = %u\n",
-               pblock->nVersion, pblock->hashPrevBlock.ToString(), pblock->hashMerkleRoot.ToString(),
-               pblock->nTime, pblock->nBits, pblock->nNonce);
+        // Save - create shared_ptr that shares ownership with the template
+        std::shared_ptr<CBlock> pblock_shared;
+        pblock_shared = std::shared_ptr<CBlock>(vNewBlockTemplate.back(), &vNewBlockTemplate.back()->block);
+        mapNewBlock[pblock->hashMerkleRoot] = std::make_pair(pblock_shared, pblock->vtx[0].vin[0].scriptSig);
 
         // Pre-build hash buffers
         char pmidstate[32];
@@ -428,6 +425,34 @@ UniValue getwork(const JSONRPCRequest& request)
         result.push_back(Pair("hash1",    HexStr(BEGIN(phash1), END(phash1)))); // deprecated
         result.push_back(Pair("target",   HexStr(BEGIN(hashTarget), END(hashTarget))));
 
+        // Serialize block header to hex string (similar to getblockheader)
+        CDataStream ssBlock(SER_NETWORK, PROTOCOL_VERSION);
+        ssBlock << pblock->GetBlockHeader();
+        std::string strBlockHex = HexStr(ssBlock.begin(), ssBlock.end());
+
+        LogPrintf("rpc getwork,\n"
+            "params.size() == 0,\n"
+            "pblock->nVersion = %d,\n"
+            "pblock->hashPrevBlock = %s,\n"
+            "pblock->hashMerkleRoot = %s,\n"
+            "pblock->nTime = %lld,\n"
+            "pblock->nBits = %u,\n"
+            "pblock->nNonce = %u\n"
+            "midstate = %s,\n"
+            "data = %s,\n"
+            "hash1 = %s,\n"
+            "target = %s\n"
+            "target_BE = %s\n"
+            "raw_block_header_hex = %s\n",
+            pblock->nVersion, pblock->hashPrevBlock.ToString(), pblock->hashMerkleRoot.ToString(),
+            pblock->nTime, pblock->nBits, pblock->nNonce,
+            HexStr(BEGIN(pmidstate), END(pmidstate)),
+            HexStr(BEGIN(pdata), END(pdata)),
+            HexStr(BEGIN(phash1), END(phash1)),
+            HexStr(BEGIN(hashTarget), END(hashTarget)),
+            hashTarget.GetHex(),
+            strBlockHex.c_str());
+
         return result;
     }
     else
@@ -444,7 +469,6 @@ UniValue getwork(const JSONRPCRequest& request)
 
         // Byte reverse
         for (unsigned int i = 0; i < 128/sizeof( uint32_t ); ++i)
-      //for (int i = 0; i < 128/4; i++) //really, the limit is sizeof( *pdata ) / sizeof( uint32_t
             ((uint32_t *)pdata)[i] = ByteReverse(((uint32_t *)pdata)[i]);
 
         LogPrintf("rpc getwork,\n"
@@ -459,13 +483,19 @@ UniValue getwork(const JSONRPCRequest& request)
                pdata->timestamp, pdata->bits, pdata->nonce);
 
         // Get saved block
-        if (!mapNewBlock.count(pdata->merkle_root))
+        std::shared_ptr<CBlock> pblock_shared;
+        CScript scriptSig;
         {
-            LogPrintf("rpc getwork, No saved block\n");
-            return false;
+            std::lock_guard<std::mutex> lock(mining_mutex);
+            if (!mapNewBlock.count(pdata->merkle_root))
+            {
+                LogPrintf("rpc getwork, No saved block\n");
+                return false;
+            }
+            pblock_shared = mapNewBlock[pdata->merkle_root].first;
+            scriptSig = mapNewBlock[pdata->merkle_root].second;
         }
-
-        CBlock* pblock = mapNewBlock[pdata->merkle_root].first;
+        CBlock* pblock = pblock_shared.get();
 
         // Parse nTime based on block version
         if (pblock->nVersion >= VERSION_of_block_for_yac_05x_new)
@@ -478,10 +508,16 @@ UniValue getwork(const JSONRPCRequest& request)
             pblock->nTime = ((uint32_t *)pdata)[17];
             pblock->nNonce = ((uint32_t *)pdata)[19];
         }
-        pblock->vtx[0].vin[0].scriptSig = mapNewBlock[pdata->merkle_root].second;
+        pblock->vtx[0].vin[0].scriptSig = scriptSig;
 
         pblock->hashMerkleRoot = pblock->BuildMerkleTree();
 
+        // Serialize block header to hex string (similar to getblockheader)
+        CDataStream ssBlock(SER_NETWORK, PROTOCOL_VERSION);
+        ssBlock << pblock->GetBlockHeader();
+        std::string strBlockHex = HexStr(ssBlock.begin(), ssBlock.end());
+        LogPrintf("rpc getwork params.size() != 0, raw_block_header_hex = %s\n", strBlockHex.c_str());
+ 
         if (!pblock->SignBlock(*pwallet))
         {
             LogPrintf("rpc getwork, Unable to sign block\n");
@@ -566,7 +602,7 @@ UniValue getblocktemplate(const JSONRPCRequest& request)
         nStart = GetTime();
 
         pblocktemplate = BlockAssembler().CreateNewBlock(coinbase_script->reserveScript);
-        if (!pblocktemplate.get())
+        if (!pblocktemplate)
             throw JSONRPCError(RPC_INTERNAL_ERROR, "Couldn't create new block");
 
         // Need to update only after we know CreateNewBlock succeeded
