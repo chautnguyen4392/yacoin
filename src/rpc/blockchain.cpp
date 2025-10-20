@@ -25,6 +25,7 @@
 #include "util.h"
 #include "utilstrencodings.h"
 #include "hash.h"
+#include "scrypt.h"
 
 #include <stdint.h>
 
@@ -1231,6 +1232,64 @@ UniValue invalidateblock(const JSONRPCRequest& request)
     return NullUniValue;
 }
 
+UniValue calculateScryptHash(const JSONRPCRequest& request)
+{
+    if (request.fHelp || request.params.size() < 1)
+        throw std::runtime_error(
+            "calculatescrypthash [data]\n"
+            "Calculate scrypt hash from block header data.\n"
+            "Data should be 80 or 84 bytes of hex-encoded block header.");
+
+    // Parse parameters
+    std::vector<unsigned char> vchData = ParseHex(request.params[0].get_str());
+
+    if (vchData.size() != 80 && vchData.size() != 84)
+    {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter: data must be exactly 80 or 84 bytes");
+    }
+
+    // Create CBlockHeader from the raw data
+    CBlockHeader blockHeader;
+    try {
+        // Use all input data for block header deserialization
+        CDataStream ssBlock(vchData, SER_NETWORK, PROTOCOL_VERSION);
+        ssBlock >> blockHeader;
+    }
+    catch (std::exception &e) {
+        throw JSONRPCError(RPC_DESERIALIZATION_ERROR, "Block header decode failed");
+    }
+
+    LogPrintf("calculatescrypthash:\n"
+           "  input_size = %zu bytes\n"
+           "  version = %d\n"
+           "  prev_block = %s\n"
+           "  merkle_root = %s\n"
+           "  timestamp = %lld\n"
+           "  bits = %u\n"
+           "  nonce = %u\n",
+           vchData.size(), blockHeader.nVersion, blockHeader.hashPrevBlock.ToString(), 
+           blockHeader.hashMerkleRoot.ToString(), blockHeader.nTime, blockHeader.nBits, blockHeader.nNonce);
+
+    // Calculate hash using the CBlockHeader's CalculateHash method
+    uint256 blockHash = blockHeader.CalculateHash();
+
+    LogPrintf("calculatescrypthash: calculated hash = %s\n", blockHash.ToString());
+
+    // Return the calculated hash as hex string
+    UniValue result(UniValue::VOBJ);
+    result.pushKV("hash_BE", blockHash.GetHex());
+    result.pushKV("hash_LE", HexStr(BEGIN(blockHash), END(blockHash)));
+    result.pushKV("input_size", (int)vchData.size());
+    result.pushKV("version", (int)blockHeader.nVersion);
+    result.pushKV("prev_block", blockHeader.hashPrevBlock.GetHex());
+    result.pushKV("merkle_root", blockHeader.hashMerkleRoot.GetHex());
+    result.pushKV("timestamp", (int64_t)blockHeader.nTime);
+    result.pushKV("bits", (int)blockHeader.nBits);
+    result.pushKV("nonce", (int)blockHeader.nNonce);
+
+    return result;
+}
+
 static const CRPCCommand commands[] =
 { //  category              name                      actor (function)         okSafe argNames
   //  --------------------- ------------------------  -----------------------  ------ ----------
@@ -1252,6 +1311,7 @@ static const CRPCCommand commands[] =
     { "blockchain",         "gettxout",               &gettxout,               true,  {"txid","n","include_mempool"} },
     { "blockchain",         "verifychain",            &verifychain,            true,  {"checklevel","nblocks"} },
     { "blockchain",         "getblockbynumber",       &getblockbynumber,       true,  {"number","verbose"} },
+    { "blockchain",         "calculatescrypthash",    &calculateScryptHash,    true,  {"data"} },
     /* Not shown in help */
     { "hidden",             "invalidateblock",        &invalidateblock,        true,  {"blockhash"} },
     { "hidden",             "waitfornewblock",        &waitfornewblock,        true,  {"timeout"} },
