@@ -639,7 +639,14 @@ bool CheckWork(CBlock* pblock, CWallet& wallet, CReserveKey& reservekey) {
     return error("CheckWork () : proof-of-work not meeting target");
   }
 
-  //// debug print
+  // Found a solution
+  {
+    LOCK(cs_main);
+    if (pblock->hashPrevBlock != chainActive.Tip()->blockHash)
+      return error("CheckWork () : generated block is stale");
+  }
+
+    //// debug print
   LogPrintf(
       "CheckWork () : new proof-of-work block found  \n"
       "hash: %s  \n"
@@ -648,12 +655,6 @@ bool CheckWork(CBlock* pblock, CWallet& wallet, CReserveKey& reservekey) {
   pblock->print();
   LogPrintf("generated %s\n", FormatMoney(pblock->vtx[0].vout[0].nValue));
 
-  // Found a solution
-  {
-    LOCK(cs_main);
-    if (pblock->hashPrevBlock != chainActive.Tip()->blockHash)
-      return error("CheckWork () : generated block is stale");
-  }
   // Remove key from key pool
   reservekey.KeepKey();
 
