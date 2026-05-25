@@ -190,6 +190,23 @@ UniValue getbestblockhash(const JSONRPCRequest& request)
     return chainActive.Tip()->blockHash.GetHex();
 }
 
+UniValue getbestblockhashsha256(const JSONRPCRequest& request)
+{
+    if (request.fHelp || request.params.size() != 0)
+        throw std::runtime_error(
+            "getbestblockhashsha256\n"
+            "\nReturns the sha256 hash of the best (tip) block in the longest blockchain.\n"
+            "\nResult:\n"
+            "\"hex\"      (string) the block hash hex encoded\n"
+            "\nExamples:\n"
+            + HelpExampleCli("getbestblockhashsha256", "")
+            + HelpExampleRpc("getbestblockhashsha256", "")
+        );
+
+    LOCK(cs_main);
+    return chainActive.Tip()->GetBlockHeader().GetSHA256Hash().GetHex();
+}
+
 void RPCNotifyBlockChange(bool ibd, const CBlockIndex * pindex)
 {
     if(pindex) {
@@ -1136,7 +1153,7 @@ UniValue getchaintxstats(const JSONRPCRequest& request)
     }
 
     const CBlockIndex* pindexPast = pindex->GetAncestor(pindex->nHeight - blockcount);
-    int nTimeDiff = pindex->GetMedianTimePast() - pindexPast->GetMedianTimePast();
+    int nTimeDiff = pindex->nTime - pindexPast->nTime;
     int nTxDiff = pindex->nChainTx - pindexPast->nChainTx;
 
     UniValue ret(UniValue::VOBJ);
@@ -1176,12 +1193,51 @@ UniValue getblockbynumber(const JSONRPCRequest& request)
     return blockToJSON(block, pblockindex, request.params.size() > 1 ? request.params[1].get_bool() : false);
 }
 
+UniValue invalidateblock(const JSONRPCRequest& request)
+{
+    if (request.fHelp || request.params.size() != 1)
+        throw std::runtime_error(
+            "invalidateblock \"blockhash\"\n"
+            "\nPermanently marks a block as invalid, as if it violated a consensus rule.\n"
+            "\nArguments:\n"
+            "1. \"blockhash\"   (string, required) the hash of the block to mark as invalid\n"
+            "\nResult:\n"
+            "\nExamples:\n"
+            + HelpExampleCli("invalidateblock", "\"blockhash\"")
+            + HelpExampleRpc("invalidateblock", "\"blockhash\"")
+        );
+
+    std::string strHash = request.params[0].get_str();
+    uint256 hash(uint256S(strHash));
+    CValidationState state;
+
+    {
+        LOCK(cs_main);
+        if (mapBlockIndex.count(hash) == 0)
+            throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Block not found");
+
+        CBlockIndex* pblockindex = mapBlockIndex[hash];
+        InvalidateBlock(state, Params(), pblockindex);
+    }
+
+    if (state.IsValid()) {
+        ActivateBestChain(state, Params());
+    }
+
+    if (!state.IsValid()) {
+        throw JSONRPCError(RPC_DATABASE_ERROR, state.GetRejectReason());
+    }
+
+    return NullUniValue;
+}
+
 static const CRPCCommand commands[] =
 { //  category              name                      actor (function)         okSafe argNames
   //  --------------------- ------------------------  -----------------------  ------ ----------
     { "blockchain",         "gettimechaininfo",       &gettimechaininfo,       true,  {} },
     { "blockchain",         "getchaintxstats",        &getchaintxstats,        true,  {"nblocks", "blockhash"} },
     { "blockchain",         "getbestblockhash",       &getbestblockhash,       true,  {} },
+    { "blockchain",         "getbestblockhashsha256", &getbestblockhashsha256, true,  {} },
     { "blockchain",         "getblockcount",          &getblockcount,          true,  {} },
     { "blockchain",         "getblock",               &getblock,               true,  {"blockhash","verbosity|verbose"} },
     { "blockchain",         "getblockhash",           &getblockhash,           true,  {"height"} },
@@ -1197,6 +1253,7 @@ static const CRPCCommand commands[] =
     { "blockchain",         "verifychain",            &verifychain,            true,  {"checklevel","nblocks"} },
     { "blockchain",         "getblockbynumber",       &getblockbynumber,       true,  {"number","verbose"} },
     /* Not shown in help */
+    { "hidden",             "invalidateblock",        &invalidateblock,        true,  {"blockhash"} },
     { "hidden",             "waitfornewblock",        &waitfornewblock,        true,  {"timeout"} },
     { "hidden",             "waitforblock",           &waitforblock,           true,  {"blockhash","timeout"} },
     { "hidden",             "waitforblockheight",     &waitforblockheight,     true,  {"height","timeout"} },

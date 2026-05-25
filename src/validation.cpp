@@ -936,12 +936,12 @@ bool IsInitialBlockDownload()
 
         CBigNum bnTarget;
         bnTarget.SetCompact(nBits);
-        CBigNum bnTargetLimit = bnProofOfWorkLimit;
+        CBigNum bnTargetLimit = Params().GetConsensus().powLimit;
         bnTargetLimit.SetCompact(bnTargetLimit.GetCompact());
 
         // NovaCoin: subsidy is cut in half every 64x multiply of PoW difficulty
         // A reasonably continuous curve is used to avoid shock to market
-        // (nSubsidyLimit / nSubsidy) ** 6 == bnProofOfWorkLimit / bnTarget
+        // (nSubsidyLimit / nSubsidy) ** 6 == Params().GetConsensus().powLimit / bnTarget
         //
         // Human readable form:
         //
@@ -1024,6 +1024,12 @@ void UpdateCoins(const CTransaction& tx, CCoinsViewCache& inputs, CTxUndo &txund
     }
     // add outputs
     AddCoins(inputs, tx, nHeight, blockHash, false, tokenCache, undoTokenData); /** YAC_TOKEN START */ /* Pass tokenCache into function */ /** YAC_TOKEN END */
+}
+
+void UpdateCoins(const CTransaction& tx, CCoinsViewCache& inputs, int nHeight)
+{
+    CTxUndo txundo;
+    UpdateCoins(tx, inputs, txundo, nHeight, uint256());
 }
 
 bool CScriptCheck::operator()()
@@ -1647,11 +1653,6 @@ void ThreadScriptCheck()
     RenameThread("yacoin-scriptch");
     scriptcheckqueue.Thread();
     LogPrintf("ThreadScriptCheck shutdown\n");
-}
-
-void ThreadScriptCheckQuit()
-{
-    scriptcheckqueue.Quit();
 }
 
 static unsigned int GetBlockScriptFlags(const CBlockIndex* pindex, const Consensus::Params& consensusparams) {
@@ -2841,6 +2842,66 @@ bool ActivateBestChain(CValidationState &state, const CChainParams& chainparams,
     return true;
 }
 
+bool InvalidateBlock(CValidationState& state, const CChainParams& chainparams, CBlockIndex *pindex)
+{
+    AssertLockHeld(cs_main);
+
+    // We first disconnect backwards and then mark the blocks as invalid.
+    // This prevents a case where pruned nodes may fail to invalidateblock
+    // and be left unable to start as they have no tip candidates (as there
+    // are no blocks that meet the "have data and are not invalid per
+    // nStatus" criteria for inclusion in setBlockIndexCandidates).
+
+    bool pindex_was_in_chain = false;
+    CBlockIndex *invalid_walk_tip = chainActive.Tip();
+
+    DisconnectedBlockTransactions disconnectpool;
+    while (chainActive.Contains(pindex)) {
+        pindex_was_in_chain = true;
+        // ActivateBestChain considers blocks already in chainActive
+        // unconditionally valid already, so force disconnect away from it.
+        if (!DisconnectTip(state, chainparams, &disconnectpool)) {
+            // It's probably hopeless to try to make the mempool consistent
+            // here if DisconnectTip failed, but we can try.
+            UpdateMempoolForReorg(disconnectpool, false);
+            return false;
+        }
+    }
+
+    // Now mark the blocks we just disconnected as descendants invalid
+    // (note this may not be all descendants).
+    while (pindex_was_in_chain && invalid_walk_tip != pindex) {
+        invalid_walk_tip->nStatus |= BLOCK_FAILED_CHILD;
+        setDirtyBlockIndex.insert(invalid_walk_tip);
+        setBlockIndexCandidates.erase(invalid_walk_tip);
+        invalid_walk_tip = invalid_walk_tip->pprev;
+    }
+
+    // Mark the block itself as invalid.
+    pindex->nStatus |= BLOCK_FAILED_VALID;
+    setDirtyBlockIndex.insert(pindex);
+    setBlockIndexCandidates.erase(pindex);
+    g_failed_blocks.insert(pindex);
+
+    // DisconnectTip will add transactions to disconnectpool; try to add these
+    // back to the mempool.
+    UpdateMempoolForReorg(disconnectpool, true);
+
+    // The resulting new best tip may not be in setBlockIndexCandidates anymore, so
+    // add it again.
+    BlockMap::iterator it = mapBlockIndex.begin();
+    while (it != mapBlockIndex.end()) {
+        if (it->second->IsValid(BLOCK_VALID_TRANSACTIONS) && it->second->nChainTx && !setBlockIndexCandidates.value_comp()(it->second, chainActive.Tip())) {
+            setBlockIndexCandidates.insert(it->second);
+        }
+        it++;
+    }
+
+    InvalidChainFound(pindex);
+    uiInterface.NotifyBlockTip(IsInitialBlockDownload(), pindex->pprev);
+    return true;
+}
+
 static CBlockIndex* AddToBlockIndex(const CBlockHeader& block)
 {
     // Check for duplicate
@@ -3588,7 +3649,8 @@ void LoadBlockRewardAndHighestDiff()
     uint256 lastEpochChangeHash = 0;
     // Calculate minimum ease (highest difficulty)
     CBlockIndex* tmpBlockIndex = chainActive.Tip();
-    ::uint32_t nMinEase = bnProofOfWorkLimit.GetCompact();
+    ::uint32_t nMinEase = Params().GetConsensus().powLimit.GetCompact();
+
     while (tmpBlockIndex != NULL && tmpBlockIndex->nHeight >= nMainnetNewLogicBlockNumber)
     {
         if ((tmpBlockIndex->nHeight >= lastEpochChangeHeight) && (tmpBlockIndex->nHeight % nEpochInterval == 0))
@@ -4501,6 +4563,11 @@ void static CheckBlockIndex(const Consensus::Params& consensusParams)
 std::string CBlockFileInfo::ToString() const
 {
     return strprintf("CBlockFileInfo(blocks=%u, size=%u, heights=%u...%u, time=%s...%s)", nBlocks, nSize, nHeightFirst, nHeightLast, DateTimeStrFormat("%Y-%m-%d", nTimeFirst), DateTimeStrFormat("%Y-%m-%d", nTimeLast));
+}
+
+CBlockFileInfo* GetBlockFileInfo(size_t n)
+{
+    return &vinfoBlockFile.at(n);
 }
 
 static const uint64_t MEMPOOL_DUMP_VERSION = 1;
