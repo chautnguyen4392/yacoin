@@ -482,49 +482,75 @@ UniValue getwork(const JSONRPCRequest& request)
                pdata->version, pdata->prev_block.ToString(), pdata->merkle_root.ToString(),
                pdata->timestamp, pdata->bits, pdata->nonce);
 
-        // Get saved block
-        std::shared_ptr<CBlock> pblock_shared;
+        // Take a DEEP COPY of the cached template out of mapNewBlock instead
+        // of holding a shared_ptr to it. Two failure modes this prevents:
+        //
+        // 1) Concurrent submissions for the same template (same merkle_root)
+        //    used to dereference the SAME CBlock via the map's shared_ptr.
+        //    The second submission's `pblock->nNonce = pdata->nonce` write
+        //    overwrote the first submission's nNonce mid-CheckWork. The
+        //    first submission's GetHash() had already cached the scrypt hash
+        //    of the original nonce, so CheckWork passed the PoW check; but
+        //    `std::make_shared<CBlock>(*pblock)` inside CheckWork then copied
+        //    pblock with its NEW (second submission's) nNonce, and
+        //    ProcessNewBlock serialized those bytes for storage and P2P
+        //    broadcast. Result: this node's index pointed at the first hash
+        //    while its on-disk bytes and outgoing P2P bytes carried the
+        //    second nonce, permanently diverging from peers.
+        //
+        // 2) Even without two submissions, a concurrent get-new-job call
+        //    in the params.size()==0 branch holds mining_mutex and mutates
+        //    the cached pblock (UpdateTime, IncrementExtraNonce). The old
+        //    code read pblock outside the lock, so a submit could see a
+        //    half-updated CBlock.
+        //
+        // The deep copy here is a CBlock value-copy: header fields, the
+        // mutable scrypt-hash cache, vchBlockSig, vtx, and vMerkleTree are
+        // all copied into a stack-local object that no other thread can
+        // see. Subsequent mutation, SignBlock, and CheckWork all operate
+        // on the local copy.
+        CBlock pblock;
         CScript scriptSig;
         {
             std::lock_guard<std::mutex> lock(mining_mutex);
-            if (!mapNewBlock.count(pdata->merkle_root))
+            auto it = mapNewBlock.find(pdata->merkle_root);
+            if (it == mapNewBlock.end())
             {
                 LogPrintf("rpc getwork, No saved block\n");
                 return false;
             }
-            pblock_shared = mapNewBlock[pdata->merkle_root].first;
-            scriptSig = mapNewBlock[pdata->merkle_root].second;
+            pblock = *(it->second.first);   // deep copy of CBlock under lock
+            scriptSig = it->second.second;  // deep copy of CScript under lock
         }
-        CBlock* pblock = pblock_shared.get();
 
         // Parse nTime based on block version
-        if (pblock->nVersion >= VERSION_of_block_for_yac_05x_new)
+        if (pblock.nVersion >= VERSION_of_block_for_yac_05x_new)
         {
-            pblock->nTime = pdata->timestamp;
-            pblock->nNonce = pdata->nonce;
+            pblock.nTime = pdata->timestamp;
+            pblock.nNonce = pdata->nonce;
         }
         else
         {
-            pblock->nTime = ((uint32_t *)pdata)[17];
-            pblock->nNonce = ((uint32_t *)pdata)[19];
+            pblock.nTime = ((uint32_t *)pdata)[17];
+            pblock.nNonce = ((uint32_t *)pdata)[19];
         }
-        pblock->vtx[0].vin[0].scriptSig = scriptSig;
+        pblock.vtx[0].vin[0].scriptSig = scriptSig;
 
-        pblock->hashMerkleRoot = pblock->BuildMerkleTree();
+        pblock.hashMerkleRoot = pblock.BuildMerkleTree();
 
         // Serialize block header to hex string (similar to getblockheader)
         CDataStream ssBlock(SER_NETWORK, PROTOCOL_VERSION);
-        ssBlock << pblock->GetBlockHeader();
+        ssBlock << pblock.GetBlockHeader();
         std::string strBlockHex = HexStr(ssBlock.begin(), ssBlock.end());
         LogPrintf("rpc getwork params.size() != 0, raw_block_header_hex = %s\n", strBlockHex.c_str());
- 
-        if (!pblock->SignBlock(*pwallet))
+
+        if (!pblock.SignBlock(*pwallet))
         {
             LogPrintf("rpc getwork, Unable to sign block\n");
             throw JSONRPCError(-100, "Unable to sign block, wallet locked?");
         }
-        
-        return CheckWork(pblock, *pwallet, reservekey);
+
+        return CheckWork(&pblock, *pwallet, reservekey);
     }
 }
 

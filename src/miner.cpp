@@ -636,14 +636,14 @@ bool CheckWork(CBlock* pblock, CWallet& wallet, CReserveKey& reservekey) {
                  hashBlock.GetHex().c_str());
 
   if (hashBlock > hashTarget) {
-    return error("CheckWork () : proof-of-work not meeting target");
+    return error("CheckWork () : %s proof-of-work not meeting target", hashBlock.GetHex().c_str());
   }
 
   // Found a solution
   {
     LOCK(cs_main);
     if (pblock->hashPrevBlock != chainActive.Tip()->blockHash)
-      return error("CheckWork () : generated block is stale");
+      return error("CheckWork () : %s generated block is stale", hashBlock.GetHex().c_str());
   }
 
     //// debug print
