@@ -2292,8 +2292,8 @@ void static UpdateTip(CBlockIndex *pindexNew) {
     // New best block
     mempool.AddTransactionsUpdated(1);
 
-    // TODO: Support notify new tip to miner
-//    cvBlockChange.notify_all();
+    // Wake every getblocktemplate longpoll waiting on a new tip
+    cvBlockChange.notify_all();
 
     bool fIsInitialDownload = IsInitialBlockDownload();
     std::vector<std::string> warningMessages;
@@ -3571,6 +3571,37 @@ bool ProcessNewBlock(const CChainParams& chainparams, const std::shared_ptr<cons
     CValidationState state; // Only used to report errors, not invalidity - ignore it
     if (!ActivateBestChain(state, chainparams, pblock))
         return error("%s: ActivateBestChain failed", __func__);
+
+    return true;
+}
+
+bool TestBlockValidity(CValidationState& state, const CChainParams& chainparams, const CBlock& block,
+                       CBlockIndex* pindexPrev, bool fCheckPOW, bool fCheckMerkleRoot)
+{
+    AssertLockHeld(cs_main);
+    assert(pindexPrev && pindexPrev == chainActive.Tip());
+    CCoinsViewCache viewNew(pcoinsTip);
+    CBlockIndex indexDummy(block);
+    indexDummy.pprev = pindexPrev;
+    indexDummy.nHeight = pindexPrev->nHeight + 1;
+    /** YAC_TOKEN START */
+    // Scratch token cache for the trial connection, seeded from the global one
+    // so the trial starts from the state the chain is actually in. Only Flush()
+    // writes back to ptokens, and ConnectBlock never calls it, so everything
+    // this trial changes dies with the copy.
+    CTokensCache tokenCache = *GetCurrentTokenCache();
+    /** YAC_TOKEN END */
+
+    // NOTE: CheckBlockHeader is called by CheckBlock
+    if (!ContextualCheckBlockHeader(block, state, chainparams, pindexPrev, GetAdjustedTime()))
+        return error("%s: Consensus::ContextualCheckBlockHeader: %s", __func__, FormatStateMessage(state));
+    if (!CheckBlock(block, state, chainparams.GetConsensus(), fCheckPOW, fCheckMerkleRoot))
+        return error("%s: Consensus::CheckBlock: %s", __func__, FormatStateMessage(state));
+    if (!ContextualCheckBlock(block, state, chainparams.GetConsensus(), pindexPrev))
+        return error("%s: Consensus::ContextualCheckBlock: %s", __func__, FormatStateMessage(state));
+    if (!ConnectBlock(block, state, &indexDummy, viewNew, chainparams, &tokenCache, true))
+        return false;
+    assert(state.IsValid());
 
     return true;
 }

@@ -554,35 +554,106 @@ UniValue getwork(const JSONRPCRequest& request)
     }
 }
 
+// NOTE: Assumes a conclusive result; if result is inconclusive, it must be handled by caller
+static UniValue BIP22ValidationResult(const CValidationState& state)
+{
+    if (state.IsValid())
+        return NullUniValue;
+
+    std::string strRejectReason = state.GetRejectReason();
+    if (state.IsError())
+        throw JSONRPCError(RPC_VERIFY_ERROR, strRejectReason);
+    if (state.IsInvalid())
+    {
+        if (strRejectReason.empty())
+            return "rejected";
+        return strRejectReason;
+    }
+    // Should be impossible
+    return "valid?";
+}
+
 UniValue getblocktemplate(const JSONRPCRequest& request)
 {
-    CWallet* const pwallet = GetWalletForJSONRPCRequest(request);
-    if (!EnsureWalletIsAvailable(pwallet, request.fHelp)) {
-        return NullUniValue;
-    }
-
     if (request.fHelp || request.params.size() > 1)
         throw std::runtime_error(
-            "getblocktemplate [template_request]\n"
-            "Returns data needed to construct a block to work on:\n"
-            "  \"version\" : block version\n"
-            "  \"previousblockhash\" : hash of current highest block\n"
-            "  \"transactions\" : contents of non-coinbase transactions that should be included in the next block\n"
-            "  \"coinbaseaux\" : data that should be included in coinbase\n"
-            "  \"coinbasevalue\" : maximum allowable input to coinbase transaction, including the generation award and transaction fees\n"
-            "  \"target\" : hash target\n"
-            "  \"mintime\" : minimum timestamp appropriate for next block\n"
-            "  \"curtime\" : current timestamp\n"
-            "  \"mutable\" : list of ways the block template may be changed\n"
-            "  \"noncerange\" : range of valid nonces\n"
-            "  \"sigoplimit\" : limit of sigops in blocks\n"
-            "  \"sizelimit\" : limit of block size\n"
-            "  \"bits\" : compressed target of next block\n"
-            "  \"height\" : height of the next block\n"
-            "See https://en.bitcoin.it/wiki/BIP_0022 for full specification.");
+            "getblocktemplate ( TemplateRequest )\n"
+            "\nIf the request parameters include a 'mode' key, that is used to explicitly select between the default 'template' request or a 'proposal'.\n"
+            "It returns data needed to construct a block to work on.\n"
+            "For full specification, see BIPs 22 and 23:\n"
+            "    https://github.com/bitcoin/bips/blob/master/bip-0022.mediawiki\n"
+            "    https://github.com/bitcoin/bips/blob/master/bip-0023.mediawiki\n"
+
+            "\nArguments:\n"
+            "1. template_request         (json object, optional) A json object in the following spec\n"
+            "     {\n"
+            "       \"mode\":\"template\"    (string, optional) This must be set to \"template\", \"proposal\" (see BIP 23), or omitted\n"
+            "       \"capabilities\":[     (array, optional) A list of strings, accepted and ignored\n"
+            "           \"support\"          (string) client side supported feature, 'longpoll', 'coinbasetxn', 'coinbasevalue', 'proposal', 'serverlist', 'workid'\n"
+            "           ,...\n"
+            "       ],\n"
+            "       \"rules\":[            (array, optional) A list of strings, accepted and ignored\n"
+            "           \"support\"          (string) client side supported softfork deployment\n"
+            "           ,...\n"
+            "       ],\n"
+            "       \"longpollid\":\"xxxx\"   (string, optional) A longpollid from an earlier template. The call blocks until the best block changes, or until the mempool has moved and a minute has passed\n"
+            "       \"data\":\"xxxx\"         (string, required for mode 'proposal') hex-encoded block to check against consensus without mining it\n"
+            "     }\n"
+            "\n"
+
+            "\nResult:\n"
+            "{\n"
+            "  \"capabilities\" : [ \"proposal\" ],  (array of strings) features supported by this server\n"
+            "  \"version\" : n,                    (numeric) The preferred block version\n"
+            "  \"rules\" : [ ],                     (array of strings) always empty: Yacoin has no BIP9 deployment\n"
+            "  \"vbavailable\" : { },               (json object) always empty: Yacoin has no BIP9 deployment\n"
+            "  \"vbrequired\" : 0,                 (numeric) always zero: Yacoin has no BIP9 deployment\n"
+            "  \"previousblockhash\" : \"xxxx\",     (string) The hash of current highest block\n"
+            "  \"transactions\" : [                (array) contents of non-coinbase transactions that should be included in the next block\n"
+            "      {\n"
+            "         \"data\" : \"xxxx\",             (string) transaction data encoded in hexadecimal (byte-for-byte)\n"
+            "         \"txid\" : \"xxxx\",             (string) transaction id encoded in little-endian hexadecimal\n"
+            "         \"hash\" : \"xxxx\",             (string) same value as txid: Yacoin carries no witness data\n"
+            "         \"depends\" : [                (array) array of numbers \n"
+            "             n                          (numeric) transactions before this one (by 1-based index in 'transactions' list) that must be present in the final block if this one is\n"
+            "             ,...\n"
+            "         ],\n"
+            "         \"fee\": n,                    (numeric) difference in value between transaction inputs and outputs; if key is not present, fee is unknown and clients MUST NOT assume there isn't one\n"
+            "         \"sigops\" : n,                (numeric) total SigOps count, as counted for purposes of block limits; if key is not present, sigop count is unknown and clients MUST NOT assume it is zero\n"
+            "         \"required\" : true|false      (boolean) if provided and true, this transaction must be in the final block\n"
+            "      }\n"
+            "      ,...\n"
+            "  ],\n"
+            "  \"coinbaseaux\" : {                 (json object) data that should be included in the coinbase's scriptSig content\n"
+            "      \"flags\" : \"xx\"                  (string) key name is to be ignored, and value included in scriptSig\n"
+            "  },\n"
+            "  \"coinbasevalue\" : n,              (numeric) maximum allowable input to coinbase transaction, including the generation award and transaction fees\n"
+            "  \"longpollid\" : \"xxxx\",            (string) identifier to pass back in a following call to wait for the next template\n"
+            "  \"target\" : \"xxxx\",                (string) The hash target\n"
+            "  \"mintime\" : ttt,                  (numeric) The minimum timestamp appropriate for next block time in seconds since epoch (Jan 1 1970 GMT)\n"
+            "  \"mutable\" : [                     (array of string) list of ways the block template may be changed \n"
+            "     \"value\"                          (string) A way the block template may be changed, e.g. 'time', 'transactions', 'prevblock'\n"
+            "     ,...\n"
+            "  ],\n"
+            "  \"noncerange\" : \"00000000ffffffff\",(string) A range of valid nonces\n"
+            "  \"sigoplimit\" : n,                 (numeric) limit of sigops in blocks\n"
+            "  \"sizelimit\" : n,                  (numeric) limit of block size\n"
+            "  \"curtime\" : ttt,                  (numeric) current timestamp in seconds since epoch (Jan 1 1970 GMT)\n"
+            "  \"bits\" : \"xxxxxxxx\",              (string) compressed target of next block\n"
+            "  \"height\" : n                      (numeric) The height of the next block\n"
+            "}\n"
+
+            "\nExamples:\n"
+            + HelpExampleCli("getblocktemplate", "")
+            + HelpExampleRpc("getblocktemplate", "")
+         );
+
+    LOCK(cs_main);
 
     std::string strMode = "template";
-    if (request.params.size() > 0)
+    UniValue lpval = NullUniValue;
+    std::set<std::string> setClientRules;
+    if (request.params.size() > 0 && !request.params[0].isNull())
     {
         const UniValue& oparam = request.params[0].get_obj();
         const UniValue& modeval = find_value(oparam, "mode");
@@ -594,10 +665,55 @@ UniValue getblocktemplate(const JSONRPCRequest& request)
         }
         else
             throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid mode");
+        lpval = find_value(oparam, "longpollid");
+
+        if (strMode == "proposal")
+        {
+            const UniValue& dataval = find_value(oparam, "data");
+            if (!dataval.isStr())
+                throw JSONRPCError(RPC_TYPE_ERROR, "Missing data String key for proposal");
+
+            CBlock block;
+            if (!DecodeHexBlk(block, dataval.get_str()))
+                throw JSONRPCError(RPC_DESERIALIZATION_ERROR, "Block decode failed");
+
+            uint256 hash = block.GetHash();
+            BlockMap::iterator mi = mapBlockIndex.find(hash);
+            if (mi != mapBlockIndex.end()) {
+                CBlockIndex *pindex = mi->second;
+                if (pindex->IsValid(BLOCK_VALID_SCRIPTS))
+                    return "duplicate";
+                if (pindex->nStatus & BLOCK_FAILED_MASK)
+                    return "duplicate-invalid";
+                return "duplicate-inconclusive";
+            }
+
+            CBlockIndex* const pindexPrev = chainActive.Tip();
+            // TestBlockValidity only supports blocks built on the current Tip
+            if (block.hashPrevBlock != pindexPrev->GetBlockHash())
+                return "inconclusive-not-best-prevblk";
+            CValidationState state;
+            TestBlockValidity(state, Params(), block, pindexPrev, false, true);
+            return BIP22ValidationResult(state);
+        }
+
+        // Client-declared softfork rules are read so that a BIP9-aware client is
+        // accepted, and validated only for shape. Yacoin runs no versionbits
+        // deployment, so there is nothing for them to select.
+        const UniValue& aClientRules = find_value(oparam, "rules");
+        if (aClientRules.isArray()) {
+            for (unsigned int idx = 0; idx < aClientRules.size(); ++idx) {
+                const UniValue& v = aClientRules[idx];
+                setClientRules.insert(v.get_str());
+            }
+        }
     }
 
     if (strMode != "template")
         throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid mode");
+
+    if (!g_connman)
+        throw JSONRPCError(RPC_CLIENT_P2P_DISABLED, "Error: Peer-to-peer functionality missing or disabled");
 
     if (g_connman->GetNodeCount(CConnman::CONNECTIONS_ALL) == 0)
         throw JSONRPCError(RPC_CLIENT_NOT_CONNECTED, "Yacoin is not connected!");
@@ -605,31 +721,77 @@ UniValue getblocktemplate(const JSONRPCRequest& request)
     if (IsInitialBlockDownload())
         throw JSONRPCError(RPC_CLIENT_IN_INITIAL_DOWNLOAD, "Yacoin is downloading blocks...");
 
-    static CReserveKey reservekey(pwallet);
-    std::shared_ptr<CReserveScript> coinbase_script;
-    pwallet->GetScriptForMining(coinbase_script);
+    static unsigned int nTransactionsUpdatedLast;
+
+    if (!lpval.isNull())
+    {
+        // Wait to respond until either the best block changes, OR a minute has passed and there are more transactions
+        uint256 hashWatchedChain;
+        boost::system_time checktxtime;
+        unsigned int nTransactionsUpdatedLastLP;
+
+        if (lpval.isStr())
+        {
+            // Format: <hashBestChain><nTransactionsUpdatedLast>
+            std::string lpstr = lpval.get_str();
+
+            hashWatchedChain.SetHex(lpstr.substr(0, 64));
+            nTransactionsUpdatedLastLP = atoi64(lpstr.substr(64));
+        }
+        else
+        {
+            // NOTE: Spec does not specify behaviour for non-string longpollid, but this makes testing easier
+            hashWatchedChain = chainActive.Tip()->GetBlockHash();
+            nTransactionsUpdatedLastLP = nTransactionsUpdatedLast;
+        }
+
+        // Release the main lock while waiting
+        LEAVE_CRITICAL_SECTION(cs_main);
+        {
+            checktxtime = boost::get_system_time() + boost::posix_time::minutes(1);
+
+            boost::unique_lock<boost::mutex> lock(csBestBlock);
+            while (chainActive.Tip()->GetBlockHash() == hashWatchedChain && IsRPCRunning())
+            {
+                if (!cvBlockChange.timed_wait(lock, checktxtime))
+                {
+                    // Timeout: Check transactions for update
+                    if (mempool.GetTransactionsUpdated() != nTransactionsUpdatedLastLP)
+                        break;
+                    checktxtime += boost::posix_time::seconds(10);
+                }
+            }
+        }
+        ENTER_CRITICAL_SECTION(cs_main);
+
+        if (!IsRPCRunning())
+            throw JSONRPCError(RPC_CLIENT_NOT_CONNECTED, "Shutting down");
+        // TODO: Maybe recheck connections/IBD and (if something wrong) send an expires-immediately template to stop miners?
+    }
 
     // Update block
-    static unsigned int nTransactionsUpdatedLast;
     static CBlockIndex* pindexPrev;
     static int64_t nStart;
     static std::unique_ptr<CBlockTemplate> pblocktemplate;
-    unsigned int nTransactionsUpdated = mempool.GetTransactionsUpdated();
 
     if (pindexPrev != chainActive.Tip() ||
-        (nTransactionsUpdated != nTransactionsUpdatedLast && GetTime() - nStart > 5))
+        (mempool.GetTransactionsUpdated() != nTransactionsUpdatedLast && GetTime() - nStart > 5))
     {
         // Clear pindexPrev so future calls make a new block, despite any failures from here on
         pindexPrev = NULL;
 
         // Store the chainActive.Tip() used before CreateNewBlock, to avoid races
-        nTransactionsUpdatedLast = nTransactionsUpdated;
+        nTransactionsUpdatedLast = mempool.GetTransactionsUpdated();
         CBlockIndex* pindexPrevNew = chainActive.Tip();
         nStart = GetTime();
 
-        pblocktemplate = BlockAssembler().CreateNewBlock(coinbase_script->reserveScript);
+        // Create new block. The coinbase output script is a placeholder: a miner
+        // building on this template replaces the whole coinbase with one paying
+        // itself, so the daemon needs no wallet here.
+        CScript scriptDummy = CScript() << OP_TRUE;
+        pblocktemplate = BlockAssembler().CreateNewBlock(scriptDummy);
         if (!pblocktemplate)
-            throw JSONRPCError(RPC_INTERNAL_ERROR, "Couldn't create new block");
+            throw JSONRPCError(RPC_OUT_OF_MEMORY, "Out of memory");
 
         // Need to update only after we know CreateNewBlock succeeded
         pindexPrev = pindexPrevNew;
@@ -638,6 +800,9 @@ UniValue getblocktemplate(const JSONRPCRequest& request)
     // Update nTime
     pblock->UpdateTime(pindexPrev);
     pblock->nNonce = 0;
+
+    UniValue aCaps(UniValue::VARR);
+    aCaps.push_back("proposal");
 
     UniValue transactions(UniValue::VARR);
     std::map<uint256, int64_t> setTxIndex;
@@ -655,6 +820,7 @@ UniValue getblocktemplate(const JSONRPCRequest& request)
         CDataStream ssTx(SER_NETWORK, PROTOCOL_VERSION);
         ssTx << tx;
         entry.push_back(Pair("data", HexStr(ssTx.begin(), ssTx.end())));
+        entry.push_back(Pair("txid", txHash.GetHex()));
         entry.push_back(Pair("hash", txHash.GetHex()));
 
         UniValue deps(UniValue::VARR);
@@ -682,12 +848,22 @@ UniValue getblocktemplate(const JSONRPCRequest& request)
     aMutable.push_back("transactions");
     aMutable.push_back("prevblock");
 
+    // Yacoin runs no BIP9 deployment, so these three are constant. They are
+    // emitted anyway so that a BIP9-aware client parses the response.
+    UniValue aRules(UniValue::VARR);
+    UniValue vbavailable(UniValue::VOBJ);
+
     UniValue result(UniValue::VOBJ);
+    result.push_back(Pair("capabilities", aCaps));
     result.push_back(Pair("version", pblock->nVersion));
+    result.push_back(Pair("rules", aRules));
+    result.push_back(Pair("vbavailable", vbavailable));
+    result.push_back(Pair("vbrequired", int(0)));
     result.push_back(Pair("previousblockhash", pblock->hashPrevBlock.GetHex()));
     result.push_back(Pair("transactions", transactions));
     result.push_back(Pair("coinbaseaux", aux));
     result.push_back(Pair("coinbasevalue", (int64_t)pblock->vtx[0].vout[0].nValue));
+    result.push_back(Pair("longpollid", chainActive.Tip()->GetBlockHash().GetHex() + i64tostr(nTransactionsUpdatedLast)));
     result.push_back(Pair("target", hashTarget.GetHex()));
     result.push_back(Pair("mintime", (int64_t)pindexPrev->GetMedianTimePast()+1));
     result.push_back(Pair("mutable", aMutable));
@@ -701,43 +877,90 @@ UniValue getblocktemplate(const JSONRPCRequest& request)
     return result;
 }
 
+class submitblock_StateCatcher : public CValidationInterface
+{
+public:
+    uint256 hash;
+    bool found;
+    CValidationState state;
+
+    submitblock_StateCatcher(const uint256 &hashIn) : hash(hashIn), found(false), state() {}
+
+protected:
+    void BlockChecked(const CBlock& block, const CValidationState& stateIn) override {
+        if (block.GetHash() != hash)
+            return;
+        found = true;
+        state = stateIn;
+    }
+};
+
 UniValue submitblock(const JSONRPCRequest& request)
 {
-    CWallet* const pwallet = GetWalletForJSONRPCRequest(request);
-    if (!EnsureWalletIsAvailable(pwallet, request.fHelp)) {
-        return NullUniValue;
+    // We allow 2 arguments for compliance with BIP22. Argument 2 is ignored.
+    if (request.fHelp || request.params.size() < 1 || request.params.size() > 2) {
+        throw std::runtime_error(
+            "submitblock \"hexdata\"  ( \"dummy\" )\n"
+            "\nAttempts to submit new block to network.\n"
+            "See https://en.bitcoin.it/wiki/BIP_0022 for full specification.\n"
+
+            "\nArguments\n"
+            "1. \"hexdata\"        (string, required) the hex-encoded block data to submit\n"
+            "2. \"dummy\"          (optional) dummy value, for compatibility with BIP22. This value is ignored.\n"
+            "\nResult:\n"
+            "null                (json null) the block was accepted\n"
+            "\"duplicate\"         (string) the node already has this block\n"
+            "\"duplicate-invalid\" (string) the node already has this block, and it is invalid\n"
+            "\"inconclusive\"      (string) the node has not reached a verdict on this block\n"
+            "\"<reason>\"          (string) the consensus rule the block broke, for example bad-txnmrklroot\n"
+            "\nExamples:\n"
+            + HelpExampleCli("submitblock", "\"mydata\"")
+            + HelpExampleRpc("submitblock", "\"mydata\"")
+        );
     }
 
-    if (request.fHelp || request.params.size() < 1 || request.params.size() > 2)
-        throw std::runtime_error(
-            "submitblock <hex data> [optional-params-obj]\n"
-            "[optional-params-obj] parameter is currently ignored.\n"
-            "Attempts to submit new block to network.\n"
-            "See https://en.bitcoin.it/wiki/BIP_0022 for full specification.");
-
-    std::vector<unsigned char> blockData(ParseHex(request.params[0].get_str()));
-    CDataStream ssBlock(blockData, SER_NETWORK, PROTOCOL_VERSION);
     std::shared_ptr<CBlock> blockptr = std::make_shared<CBlock>();
     CBlock& block = *blockptr;
-    try {
-        ssBlock >> block;
-    }
-    catch (std::exception &e) {
+    if (!DecodeHexBlk(block, request.params[0].get_str())) {
         throw JSONRPCError(RPC_DESERIALIZATION_ERROR, "Block decode failed");
     }
-    while (pwallet->IsLocked())
-    {
-        Sleep(nMillisecondsPerSecond);
+
+    if (block.vtx.empty() || !block.vtx[0].IsCoinBase()) {
+        throw JSONRPCError(RPC_DESERIALIZATION_ERROR, "Block does not start with a coinbase");
     }
 
-    if (!block.SignBlock(*pwallet))
-        throw JSONRPCError(-100, "Unable to sign block, wallet locked?");
+    uint256 hash = block.GetHash();
+    bool fBlockPresent = false;
+    {
+        LOCK(cs_main);
+        BlockMap::iterator mi = mapBlockIndex.find(hash);
+        if (mi != mapBlockIndex.end()) {
+            CBlockIndex *pindex = mi->second;
+            if (pindex->IsValid(BLOCK_VALID_SCRIPTS)) {
+                return "duplicate";
+            }
+            if (pindex->nStatus & BLOCK_FAILED_MASK) {
+                return "duplicate-invalid";
+            }
+            // Otherwise, we might only have the header - process the block before returning
+            fBlockPresent = true;
+        }
+    }
 
+    submitblock_StateCatcher sc(block.GetHash());
+    RegisterValidationInterface(&sc);
     bool fAccepted = ProcessNewBlock(Params(), blockptr, true, nullptr);
-    if (!fAccepted)
-        return "rejected";
-
-    return NullUniValue;
+    UnregisterValidationInterface(&sc);
+    if (fBlockPresent) {
+        if (fAccepted && !sc.found) {
+            return "duplicate-inconclusive";
+        }
+        return "duplicate";
+    }
+    if (!sc.found) {
+        return "inconclusive";
+    }
+    return BIP22ValidationResult(sc.state);
 }
 
 static const CRPCCommand commands[] =

@@ -473,6 +473,16 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& sc
 
     // Add coinbase tx as first transaction
     pblock->vtx.push_back(txNew);
+    // Placeholders so that vTxFees and vTxSigOpsCost stay index-aligned with
+    // pblock->vtx. Slot 0 belongs to the coinbase and is never reported.
+    pblocktemplate->vTxFees.push_back(-1);
+    pblocktemplate->vTxSigOpsCost.push_back(-1);
+
+    // Protect the chain tip read and the mempool walk in addPackageTxs, so that
+    // several miners can call getblocktemplate at the same time. cs_main is
+    // recursive, so a caller already holding it is fine, and the acquisition
+    // order is always cs_main before mempool.cs.
+    LOCK2(cs_main, mempool.cs);
 
     // Next block height
     CBlockIndex* pindexPrev = chainActive.Tip();
