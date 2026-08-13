@@ -746,6 +746,7 @@ UniValue getblocktemplate(const JSONRPCRequest& request)
         }
 
         // Release the main lock while waiting
+        bool fClientGone = false;
         LEAVE_CRITICAL_SECTION(cs_main);
         {
             checktxtime = boost::get_system_time() + boost::posix_time::minutes(1);
@@ -753,6 +754,17 @@ UniValue getblocktemplate(const JSONRPCRequest& request)
             boost::unique_lock<boost::mutex> lock(csBestBlock);
             while (chainActive.Tip()->GetBlockHash() == hashWatchedChain && IsRPCRunning())
             {
+                // A miner that hung up is not worth an HTTP worker. Nothing else
+                // in the server would notice, and on a chain that is not moving
+                // this wait outlives client after client until the pool is gone
+                // and the daemon answers no RPC at all. Checked on every wake,
+                // so a dead client costs at most one wait interval.
+                if (!request.IsClientConnected())
+                {
+                    fClientGone = true;
+                    break;
+                }
+
                 if (!cvBlockChange.timed_wait(lock, checktxtime))
                 {
                     // Timeout: Check transactions for update
@@ -764,6 +776,10 @@ UniValue getblocktemplate(const JSONRPCRequest& request)
         }
         ENTER_CRITICAL_SECTION(cs_main);
 
+        // Both of these have to be raised out here: throwing while cs_main is
+        // released would unwind past the LOCK that expects to still hold it.
+        if (fClientGone)
+            throw JSONRPCError(RPC_CLIENT_NOT_CONNECTED, "Client disconnected");
         if (!IsRPCRunning())
             throw JSONRPCError(RPC_CLIENT_NOT_CONNECTED, "Shutting down");
         // TODO: Maybe recheck connections/IBD and (if something wrong) send an expires-immediately template to stop miners?
